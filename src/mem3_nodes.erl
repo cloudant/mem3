@@ -72,7 +72,14 @@ code_change(_OldVsn, State, _Extra) ->
 initialize_nodelist() ->
     DbName = couch_config:get("mem3", "node_db", "nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
-    {ok, _, Nodes0} = couch_btree:fold(Db#db.id_tree, fun first_fold/3, [], []),
+    {ok, _, Nodes0} = couch_btree:fold(Db#db.id_tree,
+        fun(#full_doc_info{id = <<"_design/", _/binary>>}, _, Acc) ->
+		{ok, Acc};
+	   (#full_doc_info{deleted=true}, _, Acc) ->
+		{ok, Acc};
+	   (#full_doc_info{id=Id}, _, Acc) ->
+		{ok, [mem3_util:to_atom(Id) | Acc]}
+	end, [], []),
     % add self if not already present
     case lists:member(node(), Nodes0) of
     true ->
@@ -84,13 +91,6 @@ initialize_nodelist() ->
     end,
     couch_db:close(Db),
     {lists:sort(Nodes), Db#db.update_seq}.
-
-first_fold(#full_doc_info{id = <<"_design/", _/binary>>}, _, Acc) ->
-    {ok, Acc};
-first_fold(#full_doc_info{deleted=true}, _, Acc) ->
-    {ok, Acc};
-first_fold(#full_doc_info{id=Id}, _, Acc) ->
-    {ok, [mem3_util:to_atom(Id) | Acc]}.
 
 listen_for_changes(Since) ->
     DbName = couch_config:get("mem3", "node_db", "nodes"),
