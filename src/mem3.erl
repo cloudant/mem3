@@ -131,16 +131,8 @@ choose_shards(DbName, Options) when is_list(DbName) ->
 choose_shards(DbName, Options) ->
     try shards(DbName)
     catch error:E when E==database_does_not_exist; E==badarg ->
-        Nodes = mem3:nodes(),
-        NodeCount = length(Nodes),
-        Suffix = couch_util:get_value(shard_suffix, Options, ""),
-        N = mem3_util:n_val(couch_util:get_value(n, Options), NodeCount),
-        Q = mem3_util:to_integer(couch_util:get_value(q, Options,
-            couch_config:get("cluster", "q", "8"))),
-        % rotate to a random entry in the nodelist for even distribution
-        {A, B} = lists:split(crypto:rand_uniform(1,length(Nodes)+1), Nodes),
-        RotatedNodes = B ++ A,
-        mem3_util:create_partition_map(DbName, N, Q, RotatedNodes, Suffix)
+	Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
+	apply(list_to_existing_atom(Module), choose_shards, [DbName, Options])
     end.
 
 -spec dbname(#shard{} | iodata()) -> binary().
