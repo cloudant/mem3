@@ -14,11 +14,14 @@
 
 -module(mem3_choose_simple).
 
--export([choose_shards/2]).
+-export([get_node_info/0, choose_shards/2]).
 
 %% includes
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
+
+get_node_info() ->
+    {ok, []}.
 
 choose_shards(DbName, Options) ->
     Nodes = mem3:nodes(),
