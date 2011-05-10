@@ -23,10 +23,13 @@
 -record(mynode, {name, zone}).
 
 get_node_info() ->
-    {ok, "200", _, Body} = ibrowse:send_req("http://169.254.169.254/2011-01-01" ++
-					    "/meta-data/placement/availability-zone",
-					    [], get),
-    {ok, [{zone, Body}]}.
+    case ibrowse:send_req("http://169.254.169.254/2011-01-01" ++
+        "/meta-data/placement/availability-zone", [], get) of
+        {ok, "200", _, Body} ->
+            {ok, [{zone, Body}]};
+        _ ->
+            {ok, []}
+    end.
 
 choose_shards(DbName, Options) ->
     Nodes = mem3:nodes(),
@@ -48,6 +51,7 @@ choose_shards(DbName, Options) ->
     lists:keysort(#shard.range, [mem3_util:name_shard(S#shard{dbname=DbName}, Suffix) || S <- Map]).
 
 zones(Nodes) ->
+    erlang:display({nodes, Nodes}),
     [Z || #mynode{zone=Z} <- lists:ukeysort(#mynode.zone, Nodes)].
 
 nodes(Nodes, Zone) ->
