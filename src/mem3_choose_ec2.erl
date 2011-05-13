@@ -20,8 +20,6 @@
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
 
--record(mynode, {name, zone}).
-
 get_node_info() ->
     case ibrowse:send_req("http://169.254.169.254/2011-01-01" ++
         "/meta-data/placement/availability-zone", [], get) of
@@ -51,11 +49,10 @@ choose_shards(DbName, Options) ->
     lists:keysort(#shard.range, [mem3_util:name_shard(S#shard{dbname=DbName}, Suffix) || S <- Map]).
 
 zones(Nodes) ->
-    erlang:display({nodes, Nodes}),
-    [Z || #mynode{zone=Z} <- lists:ukeysort(#mynode.zone, Nodes)].
+    lists:usort([mem3:node_info(Node, <<"zone">>) || Node <- Nodes]).
 
 nodes(Nodes, Zone) ->
-    [N || #mynode{name=N,zone=Z} <- Nodes, Z == Zone].
+    [Node || Node <- Nodes, Zone == mem3:node_info(Node, <<"zone">>)].
 
 random_rotate(List) ->
     {A, B} = lists:split(crypto:rand_uniform(1,length(List)+1), List),

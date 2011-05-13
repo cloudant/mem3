@@ -14,7 +14,7 @@
 
 -module(mem3).
 
--export([start/0, stop/0, restart/0, nodes/0, nodeinfos/0, shards/1, shards/2,
+-export([start/0, stop/0, restart/0, nodes/0, node_info/2, shards/1, shards/2,
     choose_shards/2, n/1, dbname/1, ushards/1]).
 -export([compare_nodelists/0, compare_shards/1]).
 
@@ -66,8 +66,8 @@ n(DbName) ->
 nodes() ->
     mem3_nodes:get_nodelist().
 
-nodeinfos() ->
-    mem3_nodes:get_nodeinfo().
+node_info(Node, Key) ->
+    mem3_nodes:get_node_info(Node, Key).
 
 -spec shards(DbName::iodata()) -> [#shard{}].
 shards(DbName) when is_list(DbName) ->

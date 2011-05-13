@@ -17,7 +17,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 
--export([start_link/0, get_nodelist/0]).
+-export([start_link/0, get_nodelist/0, get_node_info/2]).
 
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
@@ -30,6 +30,9 @@ start_link() ->
 get_nodelist() ->
     gen_server:call(?MODULE, get_nodelist).
 
+get_node_info(Node, Key) ->
+    gen_server:call(?MODULE, {get_node_info, Node, Key}).
+
 init([]) ->
     {Nodes, UpdateSeq} = initialize_nodelist(),
     {Pid, _} = spawn_monitor(fun() -> listen_for_changes(UpdateSeq) end),
@@ -37,6 +40,13 @@ init([]) ->
 
 handle_call(get_nodelist, _From, State) ->
     {reply, lists:sort(dict:fetch_keys(State#state.nodes)), State};
+handle_call({get_node_info, Node, Key}, _From, State) ->
+    case dict:find(Node, State#state.nodes) of
+        {ok, NodeInfo} ->
+            {reply, couch_util:get_value(Key, NodeInfo), State};
+        error ->
+            {reply, error, State}
+    end;
 handle_call({add_node, Node, NodeInfo}, _From, #state{nodes=Nodes} = State) ->
     gen_event:notify(mem3_events, {add_node, Node}),
     {reply, ok, State#state{nodes = dict:store(Node, NodeInfo, Nodes)}};
