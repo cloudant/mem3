@@ -31,42 +31,32 @@ get_node_info() ->
 
 choose_shards(DbName, Options) ->
     Nodes = mem3:nodes(),
-    NodeCount = length(Nodes),
     Zones = zones(Nodes),
-    ZoneCount = length(Zones),
     Suffix = couch_util:get_value(shard_suffix, Options, ""),
-    N = mem3_util:n_val(couch_util:get_value(n, Options), NodeCount),
-    Q = mem3_util:to_integer(couch_util:get_value(q, Options,
-						  couch_config:get("cluster", "q", "8"))),
-    Z = mem3_util:z_val(couch_util:get_value(z, Options), NodeCount, ZoneCount),
-
-    ChosenZones = lists:sublist(random_rotate(zones(Nodes)), Z),
-    ChosenNodes = lists:flatmap(fun(Zone) -> pad(nodes(Nodes, Zone), Q) end, ChosenZones),
-    ChosenNodes0 = random_rotate(pad(ChosenNodes, N * Q)),
-    UniqueShards = mem3_util:make_key_ranges(Q),
-    Shards0 = duplicate(UniqueShards, N),
-    Map = lists:zipwith(fun(N2, S2) -> S2#shard{node=N2} end, ChosenNodes0, Shards0),
-    lists:keysort(#shard.range, [mem3_util:name_shard(S#shard{dbname=DbName}, Suffix) || S <- Map]).
+    Q = erlang:max(1, proplists:get_value(q, Options, 8)),
+    N = erlang:min(length(Nodes), proplists:get_value(n, Options, 3)),
+    Z = erlang:min(length(Zones), proplists:get_value(z, Options, 3)),
+    Zones1 = lists:sublist(shuffle(Zones), Z),
+    Nodes1 = [N1 || N1 <- Nodes, lists:member(mem3:node_info(zone, <<"zone">>), Zones1)],
+    lists:usort(mem3_util:create_partition_map(DbName, N, Q, Nodes1, Suffix)).
 
 zones(Nodes) ->
     lists:usort([mem3:node_info(Node, <<"zone">>) || Node <- Nodes]).
 
-nodes(Nodes, Zone) ->
-    [Node || Node <- Nodes, Zone == mem3:node_info(Node, <<"zone">>)].
+shuffle(List) ->
+    %% Determine the log n portion then randomize the list.
+    randomize(round(math:log(length(List)) + 0.5), List).
 
-random_rotate(List) ->
-    {A, B} = lists:split(crypto:rand_uniform(1,length(List)+1), List),
-    B ++ A.
+randomize(1, List) ->
+    randomize(List);
+randomize(T, List) ->
+    lists:foldl(fun(_E, Acc) ->
+                        randomize(Acc)
+                end, randomize(List), lists:seq(1, (T - 1))).
 
-duplicate(List, N) ->
-    duplicate(List, N, []).
-
-duplicate(_List, 0, Acc) ->
-    Acc;
-duplicate(List, N, Acc) ->
-    duplicate(List, N-1, List ++ Acc).
-
-pad(List, Len) when length(List) >= Len ->
-    lists:sublist(List, Len);
-pad(List, Len) ->
-    pad(List ++ List, Len).
+randomize(List) ->
+    D = lists:map(fun(A) ->
+                          {random:uniform(), A}
+                  end, List),
+    {_, D1} = lists:unzip(lists:keysort(1, D)),
+    D1.
