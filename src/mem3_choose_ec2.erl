@@ -22,7 +22,7 @@
 
 get_node_info() ->
     case ibrowse:send_req("http://169.254.169.254/2011-01-01" ++
-        "/meta-data/placement/availability-zone", [], get) of
+        "/meta-data/placement/availability-zone", [], get, <<>>, [{connect_timeout, 2000}]) of
         {ok, "200", _, Body} ->
             {ok, [{zone, Body}]};
         _ ->
