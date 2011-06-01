@@ -129,7 +129,8 @@ changes_callback({change, {Change}, _}, _) ->
     case Node of <<"_design/", _/binary>> -> ok; _ ->
         case couch_util:get_value(deleted, Change, false) of
         false ->
-            gen_server:call(?MODULE, {add_node, mem3_util:to_atom(Node), Change});
+            {Props} = couch_util:get_value(doc, Change),
+            gen_server:call(?MODULE, {add_node, mem3_util:to_atom(Node), Props});
         true ->
             gen_server:call(?MODULE, {remove_node, mem3_util:to_atom(Node)})
         end
