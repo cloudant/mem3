@@ -33,10 +33,11 @@ choose_shards(DbName, Options) ->
     Nodes = mem3:nodes(),
     NodeCount = length(Nodes),
     Zones = zones(Nodes),
+    ZoneCount = length(Zones),
     N = mem3_util:n_val(couch_util:get_value(n, Options), NodeCount),
     Q = mem3_util:to_integer(couch_util:get_value(q, Options,
                                                   couch_config:get("cluster", "q", "8"))),
-    Z = erlang:min(length(Zones), proplists:get_value(z, Options, 3)),
+    Z = mem3_util:z_val(couch_util:get_value(z, Options), NodeCount, ZoneCount),
     Suffix = couch_util:get_value(shard_suffix, Options, ""),
 
     ChosenZones = lists:sublist(shuffle(Zones), Z),
