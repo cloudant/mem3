@@ -45,7 +45,8 @@ choose_shards(DbName, Options) ->
                           Nodes1 = nodes_in_zone(Nodes, Zone),
                           {A, B} = lists:split(crypto:rand_uniform(1,length(Nodes1)+1), Nodes1),
                           RotatedNodes = B ++ A,
-                          mem3_util:create_partition_map(DbName, N1, Q, RotatedNodes, Suffix)
+                          mem3_util:create_partition_map(DbName, erlang:min(N1,length(Nodes1)),
+                                                         Q, RotatedNodes, Suffix)
                   end,
                   lists:zip(ChosenZones, apportion(N, Z))).
 
