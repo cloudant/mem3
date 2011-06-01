@@ -31,17 +31,28 @@ get_node_info() ->
 
 choose_shards(DbName, Options) ->
     Nodes = mem3:nodes(),
+    NodeCount = length(Nodes),
     Zones = zones(Nodes),
-    Suffix = couch_util:get_value(shard_suffix, Options, ""),
-    Q = erlang:max(1, proplists:get_value(q, Options, 8)),
-    N = erlang:min(length(Nodes), proplists:get_value(n, Options, 3)),
+    N = mem3_util:n_val(couch_util:get_value(n, Options), NodeCount),
+    Q = mem3_util:to_integer(couch_util:get_value(q, Options,
+                                                  couch_config:get("cluster", "q", "8"))),
     Z = erlang:min(length(Zones), proplists:get_value(z, Options, 3)),
-    Zones1 = lists:sublist(shuffle(Zones), Z),
-    Nodes1 = [N1 || N1 <- Nodes, lists:member(mem3:node_info(zone, <<"zone">>), Zones1)],
-    lists:usort(mem3_util:create_partition_map(DbName, N, Q, Nodes1, Suffix)).
+    Suffix = couch_util:get_value(shard_suffix, Options, ""),
+
+    ChosenZones = lists:sublist(shuffle(Zones), Z),
+    lists:flatmap(fun({Zone, N1}) ->
+                          Nodes1 = nodes_in_zone(Nodes, Zone),
+                          {A, B} = lists:split(crypto:rand_uniform(1,length(Nodes1)+1), Nodes1),
+                          RotatedNodes = B ++ A,
+                          mem3_util:create_partition_map(DbName, N1, Q, RotatedNodes, Suffix)
+                  end,
+                  lists:zip(ChosenZones, apportion(N, Z))).
 
 zones(Nodes) ->
     lists:usort([mem3:node_info(Node, <<"zone">>) || Node <- Nodes]).
+
+nodes_in_zone(Nodes, Zone) ->
+    [Node || Node <- Nodes, Zone == mem3:node_info(Node, <<"zone">>)].
 
 shuffle(List) ->
     %% Determine the log n portion then randomize the list.
@@ -60,3 +71,13 @@ randomize(List) ->
                   end, List),
     {_, D1} = lists:unzip(lists:keysort(1, D)),
     D1.
+
+apportion(Shares, Ways) ->
+    apportion(Shares, lists:duplicate(Ways, 0), Shares).
+
+apportion(_Shares, Acc, 0) ->
+    Acc;
+apportion(Shares, Acc, Remaining) ->
+    N = Remaining rem length(Acc),
+    [H|T] = lists:nthtail(N, Acc),
+    apportion(Shares, lists:sublist(Acc, N) ++ [H+1|T], Remaining - 1).
