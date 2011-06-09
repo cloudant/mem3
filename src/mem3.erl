@@ -134,8 +134,8 @@ choose_shards(DbName, Options) when is_list(DbName) ->
 choose_shards(DbName, Options) ->
     try shards(DbName)
     catch error:E when E==database_does_not_exist; E==badarg ->
-	Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
-	apply(list_to_existing_atom(Module), choose_shards, [DbName, Options])
+    Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
+    apply(list_to_existing_atom(Module), choose_shards, [DbName, Options])
     end.
 
 -spec dbname(#shard{} | iodata()) -> binary().

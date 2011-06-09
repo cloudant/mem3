@@ -88,15 +88,15 @@ initialize_nodelist() ->
     Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
     {ok, NewProps} = apply(list_to_existing_atom(Module), get_node_info, []),
     case dict:find(node(), Nodes0) of
-	error ->
-	    Doc = #doc{id = couch_util:to_binary(node()), body={NewProps}},
-	    mem3_util:update_db_doc(Db, Doc),
-	    Nodes = dict:store(node(), NewProps, Nodes0);
-	{ok, CurrentProps} ->
-	    MergedProps = lists:ukeymerge(1, NewProps, CurrentProps),
-	    Doc = #doc{id = couch_util:to_binary(node()), body={MergedProps}},
-	    mem3_util:update_db_doc(Db, Doc),
-	    Nodes = dict:store(node(), MergedProps, Nodes0)
+    error ->
+        Doc = #doc{id = couch_util:to_binary(node()), body={NewProps}},
+        mem3_util:update_db_doc(Db, Doc),
+        Nodes = dict:store(node(), NewProps, Nodes0);
+    {ok, CurrentProps} ->
+        MergedProps = lists:ukeymerge(1, NewProps, CurrentProps),
+        Doc = #doc{id = couch_util:to_binary(node()), body={MergedProps}},
+        mem3_util:update_db_doc(Db, Doc),
+        Nodes = dict:store(node(), MergedProps, Nodes0)
     end,
     couch_db:close(Db),
     {Nodes, Db#db.update_seq}.
