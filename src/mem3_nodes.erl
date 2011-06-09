@@ -82,15 +82,8 @@ code_change(_OldVsn, State, _Extra) ->
 initialize_nodelist() ->
     DbName = couch_config:get("mem3", "node_db", "nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
-    {ok, _, Nodes0} = couch_btree:fold(Db#db.id_tree,
-        fun(#full_doc_info{id = <<"_design/", _/binary>>}, _, Dict) ->
-		{ok, Dict};
-	   (#full_doc_info{deleted=true}, _, Dict) ->
-		{ok, Dict};
-	   (#full_doc_info{id=Id}, _, Dict) ->
-		{ok, #doc{body={Props}}} = couch_db:open_doc(Db, Id),
-		{ok, dict:store(mem3_util:to_atom(Id), Props, Dict)}
-	end, dict:new(), []),
+    {ok, _, Nodes0} = couch_btree:fold(Db#db.id_tree, fun first_fold/3,
+                                       {Db, dict:new()}, []),
     % add self if not already present
     Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
     {ok, NewProps} = apply(list_to_existing_atom(Module), get_node_info, []),
@@ -107,6 +100,14 @@ initialize_nodelist() ->
     end,
     couch_db:close(Db),
     {Nodes, Db#db.update_seq}.
+
+first_fold(#full_doc_info{id = <<"_design/", _/binary>>}, _, {_Db, Dict}) ->
+    {ok, Dict};
+first_fold(#full_doc_info{deleted=true}, _, {_Db, Dict}) ->
+    {ok, Dict};
+first_fold(DocInfo, _, {Db, Dict}) ->
+    {ok, #doc{body={Props}}} = couch_db:open_doc(Db, DocInfo),
+    {ok, {Db, dict:store(mem3_util:to_atom(Id), Props, Dict)}}.
 
 listen_for_changes(Since) ->
     DbName = couch_config:get("mem3", "node_db", "nodes"),
