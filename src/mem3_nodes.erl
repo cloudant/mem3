@@ -111,7 +111,7 @@ changes_callback({stop, EndSeq}, _) ->
 changes_callback({change, {Change}, _}, _) ->
     Node = couch_util:get_value(<<"id">>, Change),
     case Node of <<"_design/", _/binary>> -> ok; _ ->
-        case couch_util:get_value(deleted, Change, false) of
+        case couch_util:get_value(<<"deleted">>, Change, false) of
         false ->
             gen_server:call(?MODULE, {add_node, mem3_util:to_atom(Node)});
         true ->
