@@ -82,7 +82,7 @@ code_change(_OldVsn, State, _Extra) ->
 initialize_nodelist() ->
     DbName = couch_config:get("mem3", "node_db", "nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
-    {ok, _, Nodes0} = couch_btree:fold(Db#db.id_tree, fun first_fold/3,
+    {ok, _, {_, Nodes0}} = couch_btree:fold(Db#db.id_tree, fun first_fold/3,
                                        {Db, dict:new()}, []),
     % add self if not already present
     Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
