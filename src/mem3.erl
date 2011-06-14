@@ -134,8 +134,25 @@ choose_shards(DbName, Options) when is_list(DbName) ->
 choose_shards(DbName, Options) ->
     try shards(DbName)
     catch error:E when E==database_does_not_exist; E==badarg ->
-    Module = couch_config:get("mem3", "choose", "mem3_choose_simple"),
-    apply(list_to_existing_atom(Module), choose_shards, [DbName, Options])
+        Nodes = mem3:nodes(),
+        NodeCount = length(Nodes),
+        Zones = zones(Nodes),
+        ZoneCount = length(Zones),
+        N = mem3_util:n_val(couch_util:get_value(n, Options), NodeCount),
+        Q = mem3_util:to_integer(couch_util:get_value(q, Options,
+            couch_config:get("cluster", "q", "8"))),
+        Z = mem3_util:z_val(couch_util:get_value(z, Options), NodeCount, ZoneCount),
+        Suffix = couch_util:get_value(shard_suffix, Options, ""),
+        ChosenZones = lists:sublist(shuffle(Zones), Z),
+        lists:flatmap(
+            fun({Zone, N1}) ->
+                Nodes1 = nodes_in_zone(Nodes, Zone),
+                {A, B} = lists:split(crypto:rand_uniform(1,length(Nodes1)+1), Nodes1),
+                RotatedNodes = B ++ A,
+                mem3_util:create_partition_map(DbName, erlang:min(N1,length(Nodes1)),
+                    Q, RotatedNodes, Suffix)
+            end,
+            lists:zip(ChosenZones, apportion(N, Z)))
     end.
 
 -spec dbname(#shard{} | iodata()) -> binary().
@@ -149,3 +166,35 @@ dbname(DbName) when is_binary(DbName) ->
     DbName;
 dbname(_) ->
     erlang:error(badarg).
+
+
+zones(Nodes) ->
+    lists:usort([mem3:node_info(Node, <<"zone">>) || Node <- Nodes]).
+
+nodes_in_zone(Nodes, Zone) ->
+    [Node || Node <- Nodes, Zone == mem3:node_info(Node, <<"zone">>)].
+
+shuffle(List) ->
+    %% Determine the log n portion then randomize the list.
+    randomize(round(math:log(length(List)) + 0.5), List).
+
+randomize(1, List) ->
+    randomize(List);
+randomize(T, List) ->
+    lists:foldl(fun(_E, Acc) -> randomize(Acc) end,
+                randomize(List), lists:seq(1, (T - 1))).
+
+randomize(List) ->
+    D = lists:map(fun(A) -> {random:uniform(), A} end, List),
+    {_, D1} = lists:unzip(lists:keysort(1, D)),
+    D1.
+
+apportion(Shares, Ways) ->
+    apportion(Shares, lists:duplicate(Ways, 0), Shares).
+
+apportion(_Shares, Acc, 0) ->
+    Acc;
+apportion(Shares, Acc, Remaining) ->
+    N = Remaining rem length(Acc),
+    [H|T] = lists:nthtail(N, Acc),
+    apportion(Shares, lists:sublist(Acc, N) ++ [H+1|T], Remaining - 1).
