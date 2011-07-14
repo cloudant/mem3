@@ -113,7 +113,7 @@ init(_) ->
          {ok, active, start_replicator()}
     catch
         error:database_does_not_exist ->
-            twig:log(notice, "Awaiting creation of replicator db.", []),
+            twig:log(debug, "Awaiting creation of replicator db.", []),
             {ok, idle, await_creation()}
     end.
 
