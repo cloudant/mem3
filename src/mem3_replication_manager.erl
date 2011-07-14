@@ -550,7 +550,7 @@ update_rep_doc(RepDocId, KVs) ->
             _ ->
                 ok
         end
-    catch throw:conflict ->
+    catch conflict ->
         % Shouldn't happen, as by default only the role _replicator can
         % update replication documents.
         ?LOG_ERROR("Conflict error when updating replication document `~s`."
@@ -581,7 +581,7 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
     _ ->
         % Might not succeed - when the replication doc is deleted right
         % before this update (not an error, ignore).
-        fabric:update_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX])
+        {ok, _Rev} = fabric:update_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX])
     end.
 
 
@@ -621,11 +621,9 @@ ensure_rep_ddoc_exists(RepDb, DDocID) ->
                 {<<"language">>, <<"javascript">>},
                 {<<"validate_doc_update">>, ?REP_DB_DOC_VALIDATE_FUN}
             ]}),
-            case catch(fabric:update_doc(RepDb, DDoc, [?CTX])) of
-                {ok, _} -> ok;
-                Error ->
-                    io:format("error ~p~n",[Error]),
-                    ok
+            try
+                {ok, _Rev} = fabric:update_doc(RepDb, DDoc, [?CTX])
+            catch conflict -> ok %% updated by another node.
             end
     end,
     ok.
