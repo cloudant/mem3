@@ -15,7 +15,6 @@
 
 % public API
 -export([replication_started/1, replication_completed/1, replication_error/2]).
--export([is_current_owner/1]).
 
 % gen_fsm callbacks
 -export([start_link/0, init/1, handle_event/3, handle_sync_event/4, handle_info/3]).
@@ -66,12 +65,14 @@ replication_started({BaseId, _} = RepId) ->
     nil ->
         ok;
     #rep_state{doc_id = DocId} ->
+        if_current_owner(DocId, fun() ->
         update_rep_doc(DocId, [
             {<<"_replication_state">>, <<"triggered">>},
             {<<"_replication_id">>, ?l2b(BaseId)}]),
         ok = gen_fsm:sync_send_event(?MODULE, {rep_started, RepId}, infinity),
         ?LOG_INFO("Document `~s` triggered replication `~s`",
             [DocId, pp_rep_id(RepId)])
+        end)
     end.
 
 
@@ -80,10 +81,12 @@ replication_completed(RepId) ->
     nil ->
         ok;
     #rep_state{doc_id = DocId} ->
+        if_current_owner(DocId, fun() ->
         update_rep_doc(DocId, [{<<"_replication_state">>, <<"completed">>}]),
         ok = gen_fsm:sync_send_event(?MODULE, {rep_complete, RepId}, infinity),
         ?LOG_INFO("Replication `~s` finished (triggered by document `~s`)",
             [pp_rep_id(RepId), DocId])
+        end)
     end.
 
 
@@ -92,11 +95,13 @@ replication_error({BaseId, _} = RepId, Error) ->
     nil ->
         ok;
     #rep_state{doc_id = DocId} ->
+        if_current_owner(DocId, fun() ->
         % TODO: maybe add error reason to replication document
         update_rep_doc(DocId, [
             {<<"_replication_state">>, <<"error">>},
             {<<"_replication_id">>, ?l2b(BaseId)}]),
         ok = gen_fsm:sync_send_event(?MODULE, {rep_error, RepId, Error}, infinity)
+        end)
     end.
 
 
@@ -577,7 +582,7 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
     _ ->
         % Might not succeed - when the replication doc is deleted right
         % before this update (not an error, ignore).
-        update_if_owner(RepDbName, RepDoc#doc{body = {NewRepDocBody}})
+        do_async(fabric, update_doc, [RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX]])
     end.
 
 
@@ -617,7 +622,7 @@ ensure_rep_ddoc_exists(RepDb, DDocID) ->
                 {<<"language">>, <<"javascript">>},
                 {<<"validate_doc_update">>, ?REP_DB_DOC_VALIDATE_FUN}
             ]}),
-            update_if_owner(RepDb, DDoc)
+            do_async(fabric, update_doc, [RepDb, DDoc, [?CTX]])
     end,
     ok.
 
@@ -698,17 +703,17 @@ changes_callback({error, Reason}, _) ->
     twig:log(error, "callback ~p", [Reason]),
     ok.
 
-update_if_owner(RepDb, #doc{id=Id}=Doc) ->
-    case is_current_owner(Id) of
-        true ->
-            do_async(fabric, update_doc, [RepDb, Doc, [?CTX]]);
-        false ->
-            {error, not_owner}
-    end.
-
 is_current_owner({Change}) ->
     is_current_owner(get_value(id, Change));
 is_current_owner(Id) ->
     Hash = mem3_util:hash(Id),
     Nodes = lists:sort([node()|nodes()]),
     node() =:= lists:nth(1 + Hash rem length(Nodes), Nodes).
+
+if_current_owner(Term, Fun) ->
+    case is_current_owner(Term) of
+        true ->
+            Fun();
+        false ->
+            ok
+    end.
