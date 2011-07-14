@@ -151,7 +151,6 @@ idle(_Event, _From, State) ->
     {reply, ok, idle, State}.
 
 active({rep_db_update, {ChangeProps} = Change}, _From, State) ->
-        process_update(State, Change),
     NewState = try
         process_update(State, Change)
     catch
