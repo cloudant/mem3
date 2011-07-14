@@ -544,7 +544,7 @@ stop_all_replications() ->
 update_rep_doc(RepDocId, KVs) ->
     {ok, DbName} = ensure_rep_db_exists(),
     try
-        case fabric:open_doc(mem3:dbname(DbName), RepDocId, []) of
+        case do_async(fabric, open_doc, [mem3:dbname(DbName), RepDocId, []]) of
             {ok, LatestRepDoc} ->
                 update_rep_doc(DbName, LatestRepDoc, KVs);
             _ ->
@@ -581,7 +581,7 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
     _ ->
         % Might not succeed - when the replication doc is deleted right
         % before this update (not an error, ignore).
-        {ok, _Rev} = fabric:update_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX])
+        do_async(fabric, update_doc, [RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX]])
     end.
 
 
@@ -612,7 +612,7 @@ ensure_rep_db_exists() ->
 
 
 ensure_rep_ddoc_exists(RepDb, DDocID) ->
-    case fabric:open_doc(mem3:dbname(RepDb), DDocID, []) of
+    case do_async(fabric, open_doc, [mem3:dbname(RepDb), DDocID, []]) of
         {ok, _Doc} ->
             ok;
         {not_found, missing} ->
@@ -621,10 +621,7 @@ ensure_rep_ddoc_exists(RepDb, DDocID) ->
                 {<<"language">>, <<"javascript">>},
                 {<<"validate_doc_update">>, ?REP_DB_DOC_VALIDATE_FUN}
             ]}),
-            try
-                {ok, _Rev} = fabric:update_doc(RepDb, DDoc, [?CTX])
-            catch conflict -> ok %% updated by another node.
-            end
+            do_async(fabric, update_doc, [RepDb, DDoc, [?CTX]])
     end,
     ok.
 
@@ -661,6 +658,16 @@ state_after_error(#rep_state{retries_left = Left, wait = Wait} = State) ->
         State#rep_state{wait = Wait2};
     _ ->
         State#rep_state{retries_left = Left - 1, wait = Wait2}
+    end.
+
+%% SLOW
+do_async(M, F, A) ->
+    {Pid, Ref} = spawn_monitor(fun() ->
+        exit(erlang:apply(M, F, A))
+    end),
+    receive
+        {'DOWN', Ref, process, Pid, Result} ->
+            Result
     end.
 
 listen_for_changes(Since) ->
