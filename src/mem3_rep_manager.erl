@@ -83,7 +83,7 @@ init(_) ->
     ),
     Pid = spawn_link(fun scan_for_replication_jobs/0),
     {ok, #state{
-       members = lists:sort([node()|nodes()]),
+       members = lists:usort([node()|nodes()]),
        db_notifier = db_update_notifier(),
        scan_pid = Pid,
        max_retries = retries_value(
@@ -100,7 +100,7 @@ handle_cast(_Msg, State) ->
 
 handle_info({nodeup, Node}, #state{members=Members}=State) ->
     twig:log(notice, "Node ~p came up, scanning for replication tasks to relinquish.", [Node]),
-    {noreply, State#state{members=lists:sort([Node] ++ Members)}};
+    {noreply, State#state{members=lists:usort([Node] ++ Members)}};
 handle_info({nodedown, Node}, #state{members=Members}=State) ->
     twig:log(notice, "Node ~p went down, scanning for orphaned replication tasks.", [Node]),
     {noreply, State#state{members=Members -- [Node]}};
