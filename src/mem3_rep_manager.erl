@@ -149,6 +149,13 @@ db_update_notifier() ->
                 twig:log(notice, "_replicator updated.",[]);
             _ ->
                 ok
+            end;
+        ({deleted, DbName}) ->
+            case is_replicator_db(DbName) of
+            true ->
+                twig:log(notice, "_replicator deleted.",[]);
+            _ ->
+                ok
             end
         end
     ),
