@@ -175,6 +175,8 @@ scan_for_replication_jobs() ->
     {ok, Dbs} = do_async(fabric, all_dbs, []),
     scan_for_replication_jobs(Dbs).
 
+scan_for_replication_jobs([]) ->
+    ok;
 scan_for_replication_jobs([Db|Rest]) ->
     case is_replicator_db(Db) of
         true -> scan_for_replication_jobs(Db);
