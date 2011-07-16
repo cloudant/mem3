@@ -9,9 +9,7 @@
 % WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 % License for the specific language governing permissions and limitations under
 % the License.
-
 -module(mem3_rep_manager).
-
 -behaviour(gen_server).
 
 % public API
@@ -28,7 +26,7 @@
 
 -define(DOC_TO_REP, mem3_rep_doc_id_to_rep_id).
 -define(REP_TO_STATE, mem3_rep_id_to_rep_state).
--define(DB_TO_SEQ, mem3_db_to_seq). %% remembers latest seq of _replicator db(s)
+-define(DB_TO_SEQ, mem3_db_to_seq).
 -define(INITIAL_WAIT, 2.5). % seconds
 -define(MAX_WAIT, 600).     % seconds
 -define(CTX, {user_ctx, #user_ctx{roles=[<<"_admin">>, <<"_replicator">>]}}).
@@ -37,11 +35,12 @@
     db_notifier = nil,
     max_retries,
     members=[],
-    rep_start_pids = [],
-    scan_pid = nil
+    scan_pid = nil,
+    rep_start_pids = []
 }).
 
 -record(rep_state, {
+    dbname,
     doc_id,
     user_ctx,
     doc,
@@ -61,13 +60,42 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 replication_started({BaseId, _} = RepId) ->
-    stub.
+    case rep_state(RepId) of
+    nil ->
+        ok;
+    #rep_state{dbname = DbName, doc_id = DocId} ->
+        update_rep_doc(DbName, DocId, [
+            {<<"_replication_state">>, <<"triggered">>},
+            {<<"_replication_id">>, ?l2b(BaseId)}]),
+        ok = gen_server:call(?MODULE, {rep_started, RepId}, infinity),
+        twig:log(notice, "Document `~s` triggered replication `~s`",
+            [DocId, pp_rep_id(RepId)])
+    end.
+
 
 replication_completed(RepId) ->
-    stub.
+    case rep_state(RepId) of
+    nil ->
+        ok;
+    #rep_state{dbname = DbName, doc_id = DocId} ->
+        update_rep_doc(DbName, DocId, [{<<"_replication_state">>, <<"completed">>}]),
+        ok = gen_server:call(?MODULE, {rep_complete, RepId}, infinity),
+        twig:log(notice, "Replication `~s` finished (triggered by document `~s`)",
+            [pp_rep_id(RepId), DocId])
+    end.
+
 
 replication_error({BaseId, _} = RepId, Error) ->
-    stub.
+    case rep_state(RepId) of
+    nil ->
+        ok;
+    #rep_state{dbname = DbName, doc_id = DocId} ->
+        % TODO: maybe add error reason to replication document
+        update_rep_doc(DbName, DocId, [
+            {<<"_replication_state">>, <<"error">>},
+            {<<"_replication_id">>, ?l2b(BaseId)}]),
+        ok = gen_server:call(?MODULE, {rep_error, RepId, Error}, infinity)
+    end.
 
 init(_) ->
     process_flag(trap_exit, true),
@@ -81,7 +109,7 @@ init(_) ->
             ok = gen_server:cast(Server, {set_max_retries, retries_value(V)})
         end
     ),
-    Pid = spawn_link(fun scan_for_replication_jobs/0),
+    Pid = spawn_link(fun scan_all_dbs/0),
     {ok, #state{
        members = lists:usort([node()|nodes()]),
        db_notifier = db_update_notifier(),
@@ -90,29 +118,97 @@ init(_) ->
            couch_config:get("replicator", "max_replication_retry_count", "10"))
       }}.
 
-handle_call(_Call, _From, State) ->
-    {noreply, State}.
+handle_call({rep_db_update, DbName, {ChangeProps} = Change}, _From, State) ->
+    NewState = try
+        process_update(State, DbName, Change)
+    catch
+    _Tag:Error ->
+        {RepProps} = get_value(doc, ChangeProps),
+        DocId = get_value(<<"_id">>, RepProps),
+        rep_db_update_error(Error, DbName, DocId),
+        State
+    end,
+    {reply, ok, NewState};
+
+handle_call({rep_started, RepId}, _From, State) ->
+    case rep_state(RepId) of
+    nil ->
+        ok;
+    RepState ->
+        NewRepState = RepState#rep_state{
+            starting = false,
+            retries_left = State#state.max_retries,
+            max_retries = State#state.max_retries,
+            wait = ?INITIAL_WAIT
+        },
+        true = ets:insert(?REP_TO_STATE, {RepId, NewRepState})
+    end,
+    {reply, ok, State};
+
+handle_call({rep_complete, RepId}, _From, State) ->
+    true = ets:delete(?REP_TO_STATE, RepId),
+    {reply, ok, State};
+
+handle_call({rep_error, RepId, Error}, _From, State) ->
+    {reply, ok, replication_error(State, RepId, Error)};
+
+handle_call({resume_scan, DbName}, _From, State) ->
+    Since = case ets:lookup(?DB_TO_SEQ, DbName) of
+        [] -> 0;
+        [{DbName, EndSeq}] -> EndSeq
+    end,
+    Pid = changes_feed_loop(DbName, Since),
+    twig:log(notice, "Scanning ~s from update_seq ~p", [DbName, Since]),
+    {reply, ok, State#state{rep_start_pids = [Pid | State#state.rep_start_pids]}};
+
+handle_call({rep_db_checkpoint, DbName, EndSeq}, _From, State) ->
+    true = ets:insert(?DB_TO_SEQ, {DbName, EndSeq}),
+    {reply, ok, State};
+
+handle_call(Msg, From, State) ->
+    twig:log(error, "Replication manager received unexpected call ~p from ~p",
+        [Msg, From]),
+    {stop, {error, {unexpected_call, Msg}}, State}.
+
 
 handle_cast({set_max_retries, MaxRetries}, State) ->
     {noreply, State#state{max_retries = MaxRetries}};
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+
+handle_cast(Msg, State) ->
+    twig:log(error, "Replication manager received unexpected cast ~p", [Msg]),
+    {stop, {error, {unexpected_cast, Msg}}, State}.
 
 handle_info({nodeup, Node}, #state{members=Members}=State) ->
     twig:log(notice, "Node ~p came up, scanning for replication tasks to relinquish.", [Node]),
     {noreply, State#state{members=lists:usort([Node] ++ Members)}};
+
 handle_info({nodedown, Node}, #state{members=Members}=State) ->
     twig:log(notice, "Node ~p went down, scanning for orphaned replication tasks.", [Node]),
     {noreply, State#state{members=Members -- [Node]}};
+
 handle_info({'EXIT', From, normal}, #state{scan_pid = From} = State) ->
     twig:log(notice, "Background scan has completed.", []),
     {noreply, State#state{scan_pid=nil}};
+
 handle_info({'EXIT', From, Reason}, #state{scan_pid = From} = State) ->
     twig:log(error, "Background scanner died. Reason: ~p", [Reason]),
     {stop, {scanner_died, Reason}, State};
+
 handle_info({'EXIT', From, Reason}, #state{db_notifier = From} = State) ->
     twig:log(error, "Database update notifier died. Reason: ~p", [Reason]),
-    {stop, {db_update_notifier_died, Reason}, State}.
+    {stop, {db_update_notifier_died, Reason}, State};
+
+handle_info({'EXIT', From, normal}, #state{rep_start_pids = Pids} = State) ->
+    % one of the replication start processes terminated successfully
+    {noreply, State#state{rep_start_pids = Pids -- [From]}};
+
+handle_info({'DOWN', _Ref, _, _, _}, State) ->
+    % From a db monitor created by a replication process. Ignore.
+    {noreply, State};
+
+handle_info(Msg, State) ->
+    twig:log(error, "Replication manager received unexpected message ~p", [Msg]),
+    {stop, {unexpected_msg, Msg}, State}.
 
 terminate(_Reason, State) ->
     #state{
@@ -135,18 +231,53 @@ terminate(_Reason, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-is_current_owner({Change}, Members) ->
-    is_current_owner(get_value(id, Change), Members);
-is_current_owner(Id, Members) ->
-    Hash = mem3_util:hash(Id),
-    node() =:= lists:nth(1 + Hash rem length(Members), Members).
+changes_feed_loop(DbName, Since) ->
+    Server = self(),
+    Pid = spawn_link(
+        fun() ->
+            fabric:changes(DbName, fun
+            ({change, Change}, Acc) ->
+                case has_valid_rep_id(Change) of
+                true ->
+                    ok = gen_server:call(
+                        Server, {rep_db_update, DbName, Change}, infinity);
+                false ->
+                    ok
+                end,
+                {ok, Acc};
+            ({stop, EndSeq}, Acc) ->
+                ok = gen_server:call(Server, {rep_db_checkpoint, DbName, EndSeq}),
+                {ok, Acc};
+            (_, Acc) ->
+                {ok, Acc}
+            end,
+            nil,
+            #changes_args{
+                include_docs = true,
+                feed = "normal",
+                since = Since,
+                filter = main_only,
+                timeout = infinity,
+                db_open_options = [sys_db]
+                }
+            )
+        end),
+    Pid.
+
+has_valid_rep_id({Change}) ->
+    has_valid_rep_id(get_value(<<"id">>, Change));
+has_valid_rep_id(<<?DESIGN_DOC_PREFIX, _Rest/binary>>) ->
+    false;
+has_valid_rep_id(_Else) ->
+    true.
+
 
 db_update_notifier() ->
     {ok, Notifier} = couch_db_update_notifier:start_link(
         fun({updated, DbName}) ->
             case is_replicator_db(DbName) of
             true ->
-                twig:log(notice, "_replicator updated.",[]);
+                ok = gen_server:call(?MODULE, {resume_scan, mem3:dbname(DbName)});
             _ ->
                 ok
             end;
@@ -161,14 +292,195 @@ db_update_notifier() ->
     ),
     Notifier.
 
-retries_value("infinity") ->
-    infinity;
-retries_value(Value) ->
-    list_to_integer(Value).
+process_update(State, DbName, {Change}) ->
+    {RepProps} = JsonRepDoc = get_value(doc, Change),
+    DocId = get_value(<<"_id">>, RepProps),
+    case get_value(<<"deleted">>, Change, false) of
+    true ->
+        rep_doc_deleted(DocId),
+        State;
+    false ->
+        case get_value(<<"_replication_state">>, RepProps) of
+        undefined ->
+            maybe_start_replication(State, DbName, DocId, JsonRepDoc);
+        <<"triggered">> ->
+            maybe_start_replication(State, DbName, DocId, JsonRepDoc);
+        <<"completed">> ->
+            replication_complete(DocId),
+            State;
+        <<"error">> ->
+            case ets:lookup(?DOC_TO_REP, DocId) of
+            [] ->
+                maybe_start_replication(State, DbName, DocId, JsonRepDoc);
+            _ ->
+                State
+            end
+        end
+    end.
+
+
+rep_db_update_error(Error, DbName, DocId) ->
+    case Error of
+    {bad_rep_doc, Reason} ->
+        ok;
+    _ ->
+        Reason = to_binary(Error)
+    end,
+    twig:log(error, "Replication manager, error processing document `~s`: ~s",
+        [DocId, Reason]),
+    update_rep_doc(DbName, DocId, [{<<"_replication_state">>, <<"error">>}]).
+
+
+rep_user_ctx({RepDoc}) ->
+    case get_value(<<"user_ctx">>, RepDoc) of
+    undefined ->
+        #user_ctx{};
+    {UserCtx} ->
+        #user_ctx{
+            name = get_value(<<"name">>, UserCtx, null),
+            roles = get_value(<<"roles">>, UserCtx, [])
+        }
+    end.
+
+
+maybe_start_replication(State, DbName, DocId, RepDoc) ->
+    UserCtx = rep_user_ctx(RepDoc),
+    {BaseId, _} = RepId = make_rep_id(RepDoc, UserCtx),
+    case rep_state(RepId) of
+    nil ->
+        RepState = #rep_state{
+            dbname = DbName,
+            doc_id = DocId,
+            user_ctx = UserCtx,
+            doc = RepDoc,
+            starting = true,
+            retries_left = State#state.max_retries,
+            max_retries = State#state.max_retries
+        },
+        true = ets:insert(?REP_TO_STATE, {RepId, RepState}),
+        true = ets:insert(?DOC_TO_REP, {DocId, RepId}),
+        twig:log(notice, "Attempting to start replication `~s` (document `~s`).",
+            [pp_rep_id(RepId), DocId]),
+        Server = self(),
+        Pid = spawn_link(fun() ->
+            start_replication(Server, RepDoc, RepId, UserCtx, 0)
+        end),
+        State#state{rep_start_pids = [Pid | State#state.rep_start_pids]};
+    #rep_state{doc_id = DocId} ->
+        State;
+    #rep_state{starting = false, dbname = DbName, doc_id = OtherDocId} ->
+        twig:log(notice, "The replication specified by the document `~s` was already"
+            " triggered by the document `~s`", [DocId, OtherDocId]),
+        maybe_tag_rep_doc(DbName, DocId, RepDoc, ?l2b(BaseId)),
+        State;
+    #rep_state{starting = true, dbname = DbName, doc_id = OtherDocId} ->
+        twig:log(notice, "The replication specified by the document `~s` is already"
+            " being triggered by the document `~s`", [DocId, OtherDocId]),
+        maybe_tag_rep_doc(DbName, DocId, RepDoc, ?l2b(BaseId)),
+        State
+    end.
+
+
+make_rep_id(RepDoc, UserCtx) ->
+    try
+        couch_rep:make_replication_id(RepDoc, UserCtx)
+    catch
+    throw:{error, Reason} ->
+        throw({bad_rep_doc, Reason});
+    Tag:Err ->
+        throw({bad_rep_doc, to_binary({Tag, Err})})
+    end.
+
+
+maybe_tag_rep_doc(DbName, DocId, {RepProps}, RepId) ->
+    case get_value(<<"_replication_id">>, RepProps) of
+    RepId ->
+        ok;
+    _ ->
+        update_rep_doc(DbName, DocId, [{<<"_replication_id">>, RepId}])
+    end.
+
+
+start_replication(Server, RepDoc, RepId, UserCtx, Wait) ->
+    ok = timer:sleep(Wait * 1000),
+    case (catch couch_rep:start_replication(RepDoc, RepId, UserCtx, ?MODULE)) of
+    Pid when is_pid(Pid) ->
+        ok = gen_server:call(Server, {rep_started, RepId}, infinity),
+        couch_rep:get_result(Pid, RepId, RepDoc, UserCtx);
+    Error ->
+        replication_error(RepId, Error)
+    end.
+
+
+replication_complete(DocId) ->
+    case ets:lookup(?DOC_TO_REP, DocId) of
+    [{DocId, RepId}] ->
+        case rep_state(RepId) of
+        nil ->
+            couch_rep:end_replication(RepId);
+        #rep_state{} ->
+            ok
+        end,
+        true = ets:delete(?DOC_TO_REP, DocId);
+    _ ->
+        ok
+    end.
+
+
+rep_doc_deleted(DocId) ->
+    case ets:lookup(?DOC_TO_REP, DocId) of
+    [{DocId, RepId}] ->
+        couch_rep:end_replication(RepId),
+        true = ets:delete(?REP_TO_STATE, RepId),
+        true = ets:delete(?DOC_TO_REP, DocId),
+        twig:log(notice, "Stopped replication `~s` because replication document `~s`"
+            " was deleted", [pp_rep_id(RepId), DocId]);
+    [] ->
+        ok
+    end.
+
+
+replication_error(State, RepId, Error) ->
+    case rep_state(RepId) of
+    nil ->
+        State;
+    RepState ->
+        maybe_retry_replication(RepId, RepState, Error, State)
+    end.
+
+maybe_retry_replication(RepId, #rep_state{retries_left = 0} = RepState, Error, State) ->
+    #rep_state{
+        doc_id = DocId,
+        max_retries = MaxRetries
+    } = RepState,
+    couch_rep:end_replication(RepId),
+    true = ets:delete(?REP_TO_STATE, RepId),
+    true = ets:delete(?DOC_TO_REP, DocId),
+    twig:log(error, "Error in replication `~s` (triggered by document `~s`): ~s"
+        "~nReached maximum retry attempts (~p).",
+        [pp_rep_id(RepId), DocId, to_binary(error_reason(Error)), MaxRetries]),
+    State;
+
+maybe_retry_replication(RepId, RepState, Error, State) ->
+    #rep_state{
+        doc_id = DocId,
+        user_ctx = UserCtx,
+        doc = RepDoc
+    } = RepState,
+    #rep_state{wait = Wait} = NewRepState = state_after_error(RepState),
+    true = ets:insert(?REP_TO_STATE, {RepId, NewRepState}),
+    twig:log(error, "Error in replication `~s` (triggered by document `~s`): ~s"
+        "~nRestarting replication in ~p seconds.",
+        [pp_rep_id(RepId), DocId, to_binary(error_reason(Error)), Wait]),
+    Server = self(),
+    Pid = spawn_link(fun() ->
+        start_replication(Server, RepDoc, RepId, UserCtx, Wait)
+    end),
+    State#state{rep_start_pids = [Pid | State#state.rep_start_pids]}.
+
 
 stop_all_replications() ->
-    twig:log(notice, "Stopping all ongoing replications because the replicator"
-        " database was deleted or changed", []),
+    twig:log(notice, "Stopping all ongoing replications.", []),
     ets:foldl(
         fun({_, RepId}, _) ->
             couch_replicator:cancel_replication(RepId)
@@ -178,26 +490,125 @@ stop_all_replications() ->
     true = ets:delete_all_objects(?DOC_TO_REP),
     true = ets:delete_all_objects(?DB_TO_SEQ).
 
-scan_for_replication_jobs() ->
-    {ok, Dbs} = do_async(fabric, all_dbs, []),
-    scan_for_replication_jobs(Dbs).
+update_rep_doc(RepDbName, RepDocId, KVs) when is_binary(RepDocId) ->
+    try
+        case do_async(fabric, open_doc, [mem3:dbname(RepDbName), RepDocId, []]) of
+            {ok, LatestRepDoc} ->
+                update_rep_doc(RepDbName, LatestRepDoc, KVs);
+            _ ->
+                ok
+        end
+    catch conflict ->
+        % Shouldn't happen, as by default only the role _replicator can
+        % update replication documents.
+        twig:log(error, "Conflict error when updating replication document `~s`."
+            " Retrying.", [RepDocId]),
+        ok = timer:sleep(5),
+        update_rep_doc(RepDbName, RepDocId, KVs)
+    end;
 
-scan_for_replication_jobs([]) ->
+update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
+    NewRepDocBody = lists:foldl(
+        fun({<<"_replication_state">> = K, State} = KV, Body) ->
+                case get_value(K, Body) of
+                State ->
+                    Body;
+                _ ->
+                    Body1 = lists:keystore(K, 1, Body, KV),
+                    lists:keystore(
+                        <<"_replication_state_time">>, 1, Body1,
+                        {<<"_replication_state_time">>, timestamp()})
+                end;
+            ({K, _V} = KV, Body) ->
+                lists:keystore(K, 1, Body, KV)
+        end,
+        RepDocBody, KVs),
+    case NewRepDocBody of
+    RepDocBody ->
+        ok;
+    _ ->
+        % Might not succeed - when the replication doc is deleted right
+        % before this update (not an error, ignore).
+        do_async(fabric, update_doc, [RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX]])
+    end.
+
+
+% RFC3339 timestamps.
+% Note: doesn't include the time seconds fraction (RFC3339 says it's optional).
+timestamp() ->
+    {{Year, Month, Day}, {Hour, Min, Sec}} = calendar:now_to_local_time(now()),
+    UTime = erlang:universaltime(),
+    LocalTime = calendar:universal_time_to_local_time(UTime),
+    DiffSecs = calendar:datetime_to_gregorian_seconds(LocalTime) -
+        calendar:datetime_to_gregorian_seconds(UTime),
+    zone(DiffSecs div 3600, (DiffSecs rem 3600) div 60),
+    iolist_to_binary(
+        io_lib:format("~4..0w-~2..0w-~2..0wT~2..0w:~2..0w:~2..0w~s",
+            [Year, Month, Day, Hour, Min, Sec,
+                zone(DiffSecs div 3600, (DiffSecs rem 3600) div 60)])).
+
+zone(Hr, Min) when Hr >= 0, Min >= 0 ->
+    io_lib:format("+~2..0w:~2..0w", [Hr, Min]);
+zone(Hr, Min) ->
+    io_lib:format("-~2..0w:~2..0w", [abs(Hr), abs(Min)]).
+
+% pretty-print replication id
+pp_rep_id({Base, Extension}) ->
+    Base ++ Extension.
+
+
+rep_state(RepId) ->
+    case ets:lookup(?REP_TO_STATE, RepId) of
+    [{RepId, RepState}] ->
+        RepState;
+    [] ->
+        nil
+    end.
+
+
+error_reason({error, Reason}) ->
+    Reason;
+error_reason(Reason) ->
+    Reason.
+
+retries_value("infinity") ->
+    infinity;
+retries_value(Value) ->
+    list_to_integer(Value).
+
+state_after_error(#rep_state{retries_left = Left, wait = Wait} = State) ->
+    Wait2 = erlang:min(trunc(Wait * 2), ?MAX_WAIT),
+    case Left of
+    infinity ->
+        State#rep_state{wait = Wait2};
+    _ ->
+        State#rep_state{retries_left = Left - 1, wait = Wait2}
+    end.
+
+scan_all_dbs() ->
+    {ok, Dbs} = do_async(fabric, all_dbs, []),
+    scan_all_dbs(Dbs).
+
+scan_all_dbs([]) ->
     ok;
-scan_for_replication_jobs([Db|Rest]) ->
+scan_all_dbs([Db|Rest]) ->
     case is_replicator_db(Db) of
-        true -> scan_for_replication_jobs(Db);
+        true ->
+            ok = gen_server:call(?MODULE, {resume_scan, Db});
         _ -> ok
     end,
-    scan_for_replication_jobs(Rest);
-scan_for_replication_jobs(Db) ->
-    twig:log(notice, "Scanning ~p for replication jobs.", [Db]).
+    scan_all_dbs(Rest).
 
 %% enhance for dbcore.
 is_replicator_db(DbName) ->
     <<"_replicator">> =:= mem3:dbname(DbName).
 
-%% SLOW
+is_current_owner({Change}, Members) ->
+    is_current_owner(get_value(id, Change), Members);
+is_current_owner(Id, Members) ->
+    Hash = mem3_util:hash(Id),
+    node() =:= lists:nth(1 + Hash rem length(Members), Members).
+
 do_async(M, F, A) ->
     {Pid, Ref} = spawn_monitor(fun() ->
         exit(erlang:apply(M, F, A))
