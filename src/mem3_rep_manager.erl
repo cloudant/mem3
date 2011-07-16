@@ -295,7 +295,7 @@ db_update_notifier() ->
 process_update(State, DbName, {Change}) ->
     {RepProps} = JsonRepDoc = get_value(doc, Change),
     DocId = get_value(<<"_id">>, RepProps),
-    case get_value(<<"deleted">>, Change, false) of
+    case get_value(deleted, Change, false) of
     true ->
         rep_doc_deleted(DocId),
         State;
