@@ -295,11 +295,13 @@ db_update_notifier() ->
 process_update(State, DbName, {Change}) ->
     {RepProps} = JsonRepDoc = get_value(doc, Change),
     DocId = get_value(<<"_id">>, RepProps),
-    case get_value(deleted, Change, false) of
-    true ->
+    case {owner(DocId, State#state.members), get_value(deleted, Change, false)} of
+    {false, _} ->
+        State;
+    {true, true} ->
         rep_doc_deleted(DocId),
         State;
-    false ->
+    {true, false} ->
         case get_value(<<"_replication_state">>, RepProps) of
         undefined ->
             maybe_start_replication(State, DbName, DocId, JsonRepDoc);
@@ -603,9 +605,7 @@ scan_all_dbs([Db|Rest]) ->
 is_replicator_db(DbName) ->
     <<"_replicator">> =:= mem3:dbname(DbName).
 
-is_current_owner({Change}, Members) ->
-    is_current_owner(get_value(id, Change), Members);
-is_current_owner(Id, Members) ->
+owner(Id, Members) ->
     Hash = mem3_util:hash(Id),
     node() =:= lists:nth(1 + Hash rem length(Members), Members).
 
