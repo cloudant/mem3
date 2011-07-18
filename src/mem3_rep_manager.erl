@@ -176,21 +176,11 @@ handle_cast(Msg, State) ->
     twig:log(error, "Replication manager received unexpected cast ~p", [Msg]),
     {stop, {error, {unexpected_cast, Msg}}, State}.
 
-handle_info({nodeup, Node}, State) ->
-    twig:log(debug, "Node ~p came up, scanning for replication tasks to relinquish.", [Node]),
-    ets:foldl(fun({RepId, #rep_state{dbname=DbName, doc_id=DocId}}, _) ->
-        case owner(DbName) of
-            true -> ok;
-            false ->
-                couch_rep:end_replication(RepId),
-                true = ets:delete(?REP_TO_STATE, RepId),
-                true = ets:delete(?DOC_TO_REP, DocId)
-        end end, nil, ?REP_TO_STATE),
-    {noreply, State};
+handle_info({nodeup, _Node}, State) ->
+    {noreply, rescan(State)};
 
-handle_info({nodedown, Node}, State) ->
-    twig:log(debug, "Node ~p went down, scanning for orphaned replication tasks.", [Node]),
-    {noreply, restart(State)};
+handle_info({nodedown, _Node}, State) ->
+    {noreply, rescan(State)};
 
 handle_info({'EXIT', From, normal}, #state{scan_pid = From} = State) ->
     twig:log(debug, "Background scan has completed.", []),
@@ -290,7 +280,7 @@ db_update_notifier() ->
         ({deleted, DbName}) ->
             case is_replicator_db(DbName) of
             true ->
-                twig:log(notice, "_replicator deleted.",[]);
+                twig:log(notice, "TODO _replicator deleted.",[]);
             _ ->
                 ok
             end
@@ -298,25 +288,21 @@ db_update_notifier() ->
     ),
     Notifier.
 
-restart(#state{scan_pid = ScanPid, rep_start_pids = StartPids} = State) ->
-    stop_all_replications(),
-    lists:foreach(
-        fun(Pid) ->
-            catch unlink(Pid),
-            catch exit(Pid, rep_db_changed)
-        end,
-        [ScanPid | StartPids]),
+rescan(#state{scan_pid = nil} = State) ->
+    true = ets:delete_all_objects(?DB_TO_SEQ),
     NewScanPid = spawn_link(fun scan_all_dbs/0),
-    State#state{
-        scan_pid = NewScanPid,
-        rep_start_pids = []
-    }.
+    State#state{scan_pid = NewScanPid};
+rescan(#state{scan_pid = ScanPid} = State) ->
+    unlink(ScanPid),
+    exit(ScanPid, exit),
+    rescan(State#state{scan_pid = nil}).
 
 process_update(State, DbName, {Change}) ->
     {RepProps} = JsonRepDoc = get_value(doc, Change),
     DocId = get_value(<<"_id">>, RepProps),
     case {owner(DbName), get_value(deleted, Change, false)} of
     {false, _} ->
+        replication_complete(DocId),
         State;
     {true, true} ->
         rep_doc_deleted(DocId),
@@ -558,7 +544,7 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
         {Pid, Ref} = spawn_monitor(fun() ->
             exit(fabric:update_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX]))
         end),
-        receive {'DOWN', Ref, process, Pid, _} ->
+        receive {'DOWN', Ref, process, Pid, {ok, _Rev}} ->
             ok
         end
     end.
