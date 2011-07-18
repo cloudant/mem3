@@ -625,7 +625,8 @@ is_replicator_db(DbName) ->
     <<"_replicator">> =:= mem3:dbname(DbName).
 
 owner(DbName) ->
-    #shard{node=Node} = lists:keyfind(DbName, #shard.dbname, mem3:ushards(mem3:dbname(DbName))),
+    #shard{node=Node} = lists:keyfind(DbName, #shard.dbname,
+                                      mem3:ushards(mem3:dbname(DbName))),
     node() =:= Node.
 
 do_async(M, F, A) ->
