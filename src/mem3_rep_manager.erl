@@ -480,12 +480,11 @@ maybe_retry_replication(RepId, RepState, Error, State) ->
     end),
     State#state{rep_start_pids = [Pid | State#state.rep_start_pids]}.
 
-
 stop_all_replications() ->
     twig:log(notice, "Stopping all ongoing replications.", []),
     ets:foldl(
         fun({_, RepId}, _) ->
-            couch_replicator:cancel_replication(RepId)
+            couch_rep:end_replication(RepId)
         end,
         ok, ?DOC_TO_REP),
     true = ets:delete_all_objects(?REP_TO_STATE),
