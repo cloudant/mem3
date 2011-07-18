@@ -34,7 +34,6 @@
 -record(state, {
     db_notifier = nil,
     max_retries,
-    members=[],
     scan_pid = nil,
     rep_start_pids = []
 }).
@@ -111,7 +110,6 @@ init(_) ->
     ),
     Pid = spawn_link(fun scan_all_dbs/0),
     {ok, #state{
-       members = lists:usort([node()|nodes()]),
        db_notifier = db_update_notifier(),
        scan_pid = Pid,
        max_retries = retries_value(
@@ -158,7 +156,7 @@ handle_call({resume_scan, DbName}, _From, State) ->
         [{DbName, EndSeq}] -> EndSeq
     end,
     Pid = changes_feed_loop(DbName, Since),
-    twig:log(notice, "Scanning ~s from update_seq ~p", [DbName, Since]),
+    twig:log(debug, "Scanning ~s from update_seq ~p", [DbName, Since]),
     {reply, ok, State#state{rep_start_pids = [Pid | State#state.rep_start_pids]}};
 
 handle_call({rep_db_checkpoint, DbName, EndSeq}, _From, State) ->
@@ -178,25 +176,24 @@ handle_cast(Msg, State) ->
     twig:log(error, "Replication manager received unexpected cast ~p", [Msg]),
     {stop, {error, {unexpected_cast, Msg}}, State}.
 
-handle_info({nodeup, Node}, #state{members=Members}=State) ->
-    NewMembers = lists:usort([Node] ++ Members),
-    twig:log(notice, "Node ~p came up, scanning for replication tasks to relinquish.", [Node]),
-    ets:foldl(fun({RepId, #rep_state{doc_id=DocId}}, _) ->
-        case owner(DocId, NewMembers) of
+handle_info({nodeup, Node}, State) ->
+    twig:log(debug, "Node ~p came up, scanning for replication tasks to relinquish.", [Node]),
+    ets:foldl(fun({RepId, #rep_state{dbname=DbName, doc_id=DocId}}, _) ->
+        case owner(DbName) of
             true -> ok;
             false ->
                 couch_rep:end_replication(RepId),
                 true = ets:delete(?REP_TO_STATE, RepId),
                 true = ets:delete(?DOC_TO_REP, DocId)
         end end, nil, ?REP_TO_STATE),
-    {noreply, State#state{members=NewMembers}};
+    {noreply, State};
 
-handle_info({nodedown, Node}, #state{members=Members}=State) ->
-    twig:log(notice, "Node ~p went down, scanning for orphaned replication tasks.", [Node]),
-    {noreply, restart(State#state{members=Members -- [Node]})};
+handle_info({nodedown, Node}, State) ->
+    twig:log(debug, "Node ~p went down, scanning for orphaned replication tasks.", [Node]),
+    {noreply, restart(State)};
 
 handle_info({'EXIT', From, normal}, #state{scan_pid = From} = State) ->
-    twig:log(notice, "Background scan has completed.", []),
+    twig:log(debug, "Background scan has completed.", []),
     {noreply, State#state{scan_pid=nil}};
 
 handle_info({'EXIT', From, Reason}, #state{scan_pid = From} = State) ->
@@ -318,7 +315,7 @@ restart(#state{scan_pid = ScanPid, rep_start_pids = StartPids} = State) ->
 process_update(State, DbName, {Change}) ->
     {RepProps} = JsonRepDoc = get_value(doc, Change),
     DocId = get_value(<<"_id">>, RepProps),
-    case {owner(DocId, State#state.members), get_value(deleted, Change, false)} of
+    case {owner(DbName), get_value(deleted, Change, false)} of
     {false, _} ->
         State;
     {true, true} ->
@@ -627,9 +624,9 @@ scan_all_dbs([Db|Rest]) ->
 is_replicator_db(DbName) ->
     <<"_replicator">> =:= mem3:dbname(DbName).
 
-owner(Item, Members) ->
-    Hash = mem3_util:hash(Item),
-    node() =:= lists:nth(1 + Hash rem length(Members), Members).
+owner(DbName) ->
+    #shard{node=Node} = lists:keyfind(DbName, #shard.dbname, mem3:ushards(mem3:dbname(DbName))),
+    node() =:= Node.
 
 do_async(M, F, A) ->
     {Pid, Ref} = spawn_monitor(fun() ->
