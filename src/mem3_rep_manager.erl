@@ -512,20 +512,25 @@ stop_all_replications() ->
     true = ets:delete_all_objects(?DB_TO_SEQ).
 
 update_rep_doc(RepDbName, RepDocId, KVs) when is_binary(RepDocId) ->
-    try
-        case do_async(fabric, open_doc, [mem3:dbname(RepDbName), RepDocId, []]) of
-            {ok, LatestRepDoc} ->
-                update_rep_doc(RepDbName, LatestRepDoc, KVs);
-            _ ->
-                ok
-        end
-    catch conflict ->
-        % Shouldn't happen, as by default only the role _replicator can
-        % update replication documents.
-        twig:log(error, "Conflict error when updating replication document `~s`."
-            " Retrying.", [RepDocId]),
-        ok = timer:sleep(5),
-        update_rep_doc(RepDbName, RepDocId, KVs)
+    {Pid, Ref} = spawn_monitor(fun() ->
+        exit(try
+            case fabric:open_doc(mem3:dbname(RepDbName), RepDocId, []) of
+                {ok, LatestRepDoc} ->
+                    update_rep_doc(RepDbName, LatestRepDoc, KVs);
+                _ ->
+                    ok
+            end
+            catch conflict ->
+                % Shouldn't happen, as by default only the role _replicator can
+                % update replication documents.
+                twig:log(error, "Conflict error when updating replication document `~s`."
+                    " Retrying.", [RepDocId]),
+                ok = timer:sleep(5),
+                update_rep_doc(RepDbName, RepDocId, KVs)
+            end)
+    end),
+    receive {'DOWN', Ref, process, Pid, _} ->
+        ok
     end;
 
 update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
@@ -550,7 +555,12 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
     _ ->
         % Might not succeed - when the replication doc is deleted right
         % before this update (not an error, ignore).
-        do_async(fabric, update_doc, [RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX]])
+        {Pid, Ref} = spawn_monitor(fun() ->
+            exit(fabric:update_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}}, [?CTX]))
+        end),
+        receive {'DOWN', Ref, process, Pid, _} ->
+            ok
+        end
     end.
 
 
@@ -607,8 +617,12 @@ state_after_error(#rep_state{retries_left = Left, wait = Wait} = State) ->
     end.
 
 scan_all_dbs() ->
-    {ok, Dbs} = do_async(fabric, all_dbs, []),
-    scan_all_dbs(Dbs).
+    {Pid, Ref} = spawn_monitor(fun() -> exit(fabric:all_dbs()) end),
+    receive {'DOWN', Ref, process, Pid, {ok, Dbs}} ->
+            scan_all_dbs(Dbs);
+    {'DOWN', Ref, process, Pid, Error} ->
+            throw(Error)
+    end.
 
 scan_all_dbs([]) ->
     ok;
@@ -628,12 +642,3 @@ owner(DbName) ->
     #shard{node=Node} = lists:keyfind(DbName, #shard.dbname,
                                       mem3:ushards(mem3:dbname(DbName))),
     node() =:= Node.
-
-do_async(M, F, A) ->
-    {Pid, Ref} = spawn_monitor(fun() ->
-        exit(erlang:apply(M, F, A))
-    end),
-    receive
-        {'DOWN', Ref, process, Pid, Result} ->
-            Result
-    end.
