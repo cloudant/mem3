@@ -179,12 +179,21 @@ handle_cast(Msg, State) ->
     {stop, {error, {unexpected_cast, Msg}}, State}.
 
 handle_info({nodeup, Node}, #state{members=Members}=State) ->
+    NewMembers = lists:usort([Node] ++ Members),
     twig:log(notice, "Node ~p came up, scanning for replication tasks to relinquish.", [Node]),
-    {noreply, State#state{members=lists:usort([Node] ++ Members)}};
+    ets:foldl(fun({RepId, #rep_state{doc_id=DocId}}, _) ->
+        case owner(DocId, NewMembers) of
+            true -> ok;
+            false ->
+                couch_rep:end_replication(RepId),
+                true = ets:delete(?REP_TO_STATE, RepId),
+                true = ets:delete(?DOC_TO_REP, DocId)
+        end end, nil, ?REP_TO_STATE),
+    {noreply, State#state{members=NewMembers}};
 
 handle_info({nodedown, Node}, #state{members=Members}=State) ->
     twig:log(notice, "Node ~p went down, scanning for orphaned replication tasks.", [Node]),
-    {noreply, State#state{members=Members -- [Node]}};
+    {noreply, restart(State#state{members=Members -- [Node]})};
 
 handle_info({'EXIT', From, normal}, #state{scan_pid = From} = State) ->
     twig:log(notice, "Background scan has completed.", []),
@@ -291,6 +300,20 @@ db_update_notifier() ->
         end
     ),
     Notifier.
+
+restart(#state{scan_pid = ScanPid, rep_start_pids = StartPids} = State) ->
+    stop_all_replications(),
+    lists:foreach(
+        fun(Pid) ->
+            catch unlink(Pid),
+            catch exit(Pid, rep_db_changed)
+        end,
+        [ScanPid | StartPids]),
+    NewScanPid = spawn_link(fun scan_all_dbs/0),
+    State#state{
+        scan_pid = NewScanPid,
+        rep_start_pids = []
+    }.
 
 process_update(State, DbName, {Change}) ->
     {RepProps} = JsonRepDoc = get_value(doc, Change),
@@ -604,8 +627,8 @@ scan_all_dbs([Db|Rest]) ->
 is_replicator_db(DbName) ->
     <<"_replicator">> =:= mem3:dbname(DbName).
 
-owner(Id, Members) ->
-    Hash = mem3_util:hash(Id),
+owner(Item, Members) ->
+    Hash = mem3_util:hash(Item),
     node() =:= lists:nth(1 + Hash rem length(Members), Members).
 
 do_async(M, F, A) ->
