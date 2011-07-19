@@ -270,17 +270,10 @@ has_valid_rep_id(_Else) ->
 
 db_update_notifier() ->
     {ok, Notifier} = couch_db_update_notifier:start_link(
-        fun({updated, DbName}) ->
+        fun({_, DbName}) ->
             case is_replicator_db(DbName) of
             true ->
                 ok = gen_server:call(?MODULE, {resume_scan, mem3:dbname(DbName)});
-            _ ->
-                ok
-            end;
-        ({deleted, DbName}) ->
-            case is_replicator_db(DbName) of
-            true ->
-                twig:log(notice, "TODO _replicator deleted.",[]);
             _ ->
                 ok
             end
