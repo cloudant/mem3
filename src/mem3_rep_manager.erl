@@ -109,7 +109,7 @@ init(_) ->
         end
     ),
     NotifierPid = db_update_notifier(),
-    ScanPid = spawn_link(fun scan_all_dbs/0),
+    ScanPid = spawn_link(fun() -> scan_all_dbs(Server) end),
     {ok, #state{
        db_notifier = NotifierPid,
        scan_pid = ScanPid,
@@ -270,11 +270,12 @@ has_valid_rep_id(_Else) ->
 
 
 db_update_notifier() ->
+    Server = self(),
     {ok, Notifier} = couch_db_update_notifier:start_link(
         fun({_, DbName}) ->
             case is_replicator_db(DbName) of
             true ->
-                ok = gen_server:call(?MODULE, {resume_scan, mem3:dbname(DbName)});
+                ok = gen_server:call(Server, {resume_scan, mem3:dbname(DbName)});
             _ ->
                 ok
             end
@@ -284,7 +285,8 @@ db_update_notifier() ->
 
 rescan(#state{scan_pid = nil} = State) ->
     true = ets:delete_all_objects(?DB_TO_SEQ),
-    NewScanPid = spawn_link(fun scan_all_dbs/0),
+    Server = self(),
+    NewScanPid = spawn_link(fun() -> scan_all_dbs(Server) end),
     State#state{scan_pid = NewScanPid};
 rescan(#state{scan_pid = ScanPid} = State) ->
     unlink(ScanPid),
@@ -590,19 +592,19 @@ state_after_error(#rep_state{retries_left = Left, wait = Wait} = State) ->
         State#rep_state{retries_left = Left - 1, wait = Wait2}
     end.
 
-scan_all_dbs() ->
+scan_all_dbs(Server) when is_pid(Server) ->
     {ok, AllDbs} = fabric:all_dbs(),
-    scan_all_dbs(AllDbs).
+    scan_all_dbs(Server, AllDbs).
 
-scan_all_dbs([]) ->
+scan_all_dbs(_Server, []) ->
     ok;
-scan_all_dbs([Db|Rest]) ->
+scan_all_dbs(Server, [Db|Rest]) ->
     case is_replicator_db(Db) of
         true ->
-            ok = gen_server:call(?MODULE, {resume_scan, Db});
+            ok = gen_server:call(Server, {resume_scan, Db});
         _ -> ok
     end,
-    scan_all_dbs(Rest).
+    scan_all_dbs(Server, Rest).
 
 %% enhance for dbcore.
 is_replicator_db(DbName) ->
