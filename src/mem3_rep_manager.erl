@@ -108,10 +108,11 @@ init(_) ->
             ok = gen_server:cast(Server, {set_max_retries, retries_value(V)})
         end
     ),
-    Pid = spawn_link(fun scan_all_dbs/0),
+    NotifierPid = db_update_notifier(),
+    ScanPid = spawn_link(fun scan_all_dbs/0),
     {ok, #state{
-       db_notifier = db_update_notifier(),
-       scan_pid = Pid,
+       db_notifier = NotifierPid,
+       scan_pid = ScanPid,
        max_retries = retries_value(
            couch_config:get("replicator", "max_replication_retry_count", "10"))
       }}.
