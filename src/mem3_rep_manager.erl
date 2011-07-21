@@ -15,6 +15,7 @@
 % public API
 -export([start_link/0]).
 -export([replication_started/1, replication_completed/1, replication_error/2]).
+-export([owner/2]).
 
 % gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
@@ -296,7 +297,7 @@ rescan(#state{scan_pid = ScanPid} = State) ->
 process_update(State, DbName, {Change}) ->
     {RepProps} = JsonRepDoc = get_value(doc, Change),
     DocId = get_value(<<"_id">>, RepProps),
-    case {owner(DbName), get_value(deleted, Change, false)} of
+    case {owner(DbName, DocId), get_value(deleted, Change, false)} of
     {false, _} ->
         replication_complete(DocId),
         State;
@@ -610,7 +611,10 @@ scan_all_dbs(Server, [Db|Rest]) ->
 is_replicator_db(DbName) ->
     <<"_replicator">> =:= mem3:dbname(DbName).
 
-owner(DbName) ->
-    #shard{node=Node} = lists:keyfind(DbName, #shard.dbname,
-                                      mem3:ushards(mem3:dbname(DbName))),
+owner(DbName, DocId) ->
+    Shards = mem3:shards(DbName, DocId),
+    Nodes = [node()|nodes()],
+    LiveShards = [S || #shard{node=Node} = S <- Shards, lists:member(Node, Nodes)],
+    [#shard{node=Node}] = lists:usort(fun(#shard{name=A}, #shard{name=B}) ->
+                                              A =< B  end, LiveShards),
     node() =:= Node.
