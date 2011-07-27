@@ -607,9 +607,10 @@ scan_all_dbs(Server, [Db|Rest]) ->
     end,
     scan_all_dbs(Server, Rest).
 
-%% enhance for dbcore.
 is_replicator_db(DbName) ->
-    <<"_replicator">> =:= mem3:dbname(DbName).
+    match =:= re:run(mem3:dbname(DbName),
+                     "^([a-z][a-z0-9\\_\\$()\\+\\-\\/]*/)?_replicator$",
+                     [{capture,none}]).
 
 owner(DbName, DocId) ->
     Shards = mem3:shards(DbName, DocId),
