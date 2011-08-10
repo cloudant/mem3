@@ -122,7 +122,7 @@ ushards(DbName) ->
     end, lists:sort(live_shards(DbName))).
 
 live_shards(DbName) ->
-    Nodes = [node()|erlang:nodes()],
+    Nodes = mem3_live:live_nodes(),
     [S || #shard{node=Node} = S <- shards(DbName), lists:member(Node, Nodes)].
 
 -spec choose_shards(DbName::iodata(), Options::list()) -> [#shard{}].
