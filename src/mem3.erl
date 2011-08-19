@@ -17,7 +17,7 @@
 -export([start/0, stop/0, restart/0, nodes/0, node_info/2, shards/1, shards/2,
     choose_shards/2, n/1, dbname/1, ushards/1]).
 -export([compare_nodelists/0, compare_shards/1]).
--export([quorum/3]).
+-export([quorum/1]).
 
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
@@ -203,16 +203,10 @@ apportion(Shares, Acc, Remaining) ->
 
 % quorum functions
 
-quorum(DbName, Key, Options) when is_binary(DbName) ->
-    list_to_integer(couch_util:get_value(Key, Options, quorum(DbName)));
-
-quorum(Req, Db, Key) ->
-    couch_httpd:qs_value(Req, Key, quorum(Db)).
-
 quorum(#db{name=DbName}) ->
     quorum(DbName);
 quorum(DbName) ->
-    integer_to_list(n(DbName) div 2 + 1).
+    n(DbName) div 2 + 1.
 
 
 
