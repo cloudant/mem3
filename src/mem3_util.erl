@@ -117,12 +117,10 @@ delete_db_doc(DocId) ->
     end.
 
 delete_db_doc(Db, DocId) ->
-    case couch_db:open_doc(Db, DocId, []) of
-    {not_found, _} ->
-        ok;
-    {ok, OldDoc} ->
-        {ok, _} = couch_db:update_doc(Db, OldDoc#doc{deleted=true}, [])
-    end.
+    {ok, Revs} = couch_db:open_doc_revs(Db, DocId, all, []),
+    Docs = [Doc#doc{deleted=true} || {ok, #doc{deleted=false}=Doc} <- Revs],
+    couch_db:update_docs(Db, Docs, []),
+    ok.
 
 build_shards(DbName, DocProps) ->
     {ByNode} = couch_util:get_value(<<"by_node">>, DocProps, {[]}),
