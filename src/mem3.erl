@@ -15,6 +15,7 @@
 -module(mem3).
 
 -export([start/0, stop/0, restart/0, nodes/0, node_info/2, shards/1, shards/2,
+         ushards/2,
     choose_shards/2, n/1, dbname/1, ushards/1]).
 -export([compare_nodelists/0, compare_shards/1]).
 
@@ -123,6 +124,12 @@ ushards(DbName) ->
     lists:usort(fun(#shard{name=A}, #shard{name=B}) ->
         A =< B
     end, lists:sort(live_shards(DbName))).
+
+ushards(DbName, DocId) ->
+    Shards = shards(DbName, DocId),
+    UShards = ushards(DbName),
+    [S || S <- Shards,lists:member(S, UShards)].
+
 
 live_shards(DbName) ->
     Nodes = [node()|erlang:nodes()],
