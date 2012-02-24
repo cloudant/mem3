@@ -46,7 +46,7 @@ make_local_id(#shard{node=SourceNode}, #shard{node=TargetNode}) ->
     T = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(TargetNode))),
     <<"_local/shard-sync-", S/binary, "-", T/binary>>.
 
-changes_enumerator(FullDocInfo, _, #acc{revcount = C} = Acc) when C >= 99 ->
+changes_enumerator(FullDocInfo, _, #acc{revcount = C} = Acc) when C >= 499 ->
     #doc_info{high_seq = Seq} = couch_doc:to_doc_info(FullDocInfo),
     {stop, Acc#acc{seq = Seq, infos = [FullDocInfo | Acc#acc.infos]}};
 
