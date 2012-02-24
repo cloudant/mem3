@@ -233,10 +233,12 @@ start_update_notifier() ->
     Db3 = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db",
         "_users")),
     couch_db_update_notifier:start_link(fun
-    ({updated, Db}) when Db == Db1; Db == Db2; Db == Db3 ->
+    ({updated, Db1}) ->
         Nodes = mem3:nodes(),
         Live = nodes(),
-        [?MODULE:push(Db, N) || N <- Nodes, lists:member(N, Live)];
+        [?MODULE:push(Db1, N) || N <- Nodes, lists:member(N, Live)];
+    ({updated, Db}) when Db == Db2; Db == Db3 ->
+        ?MODULE:push(Db, find_next_node());
     ({updated, <<"shards/", _/binary>> = ShardName}) ->
         % TODO deal with split/merged partitions by comparing keyranges
         try mem3:shards(mem3:dbname(ShardName)) of
@@ -252,6 +254,14 @@ start_update_notifier() ->
     ({deleted, <<"shards/", _:18/binary, _/binary>> = ShardName}) ->
         gen_server:cast(?MODULE, {remove_shard, ShardName});
     (_) -> ok end).
+
+find_next_node() ->
+    LiveNodes = [node()|nodes()],
+    AllNodes0 = lists:sort(mem3:nodes()),
+    AllNodes1 = [X || X <- AllNodes0, lists:member(X, LiveNodes)],
+    AllNodes = AllNodes1 ++ [hd(AllNodes1)],
+    [_Self, Next| _] = lists:dropwhile(fun(N) -> N =/= node() end, AllNodes),
+    Next.
 
 %% @doc Finds the next {DbName,Node} pair in the list of waiting replications
 %% which does not correspond to an already running replication
