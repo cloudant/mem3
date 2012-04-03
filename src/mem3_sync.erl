@@ -204,10 +204,8 @@ sync_nodes_and_dbs() ->
     Db1 = couch_config:get("mem3", "node_db", "nodes"),
     Db2 = couch_config:get("mem3", "shard_db", "dbs"),
     Db3 = couch_config:get("couch_httpd_auth", "authentication_db", "_users"),
-    Dbs = [Db1, Db2, Db3],
-    Nodes = mem3:nodes(),
-    Live = nodes(),
-    [[push(?l2b(Db), N) || Db <- Dbs] || N <- Nodes, lists:member(N, Live)].
+    Node = find_next_node(),
+    [push(?l2b(Db), Node) || Db <- [Db1, Db2, Db3]].
 
 initial_sync() ->
     [net_kernel:connect_node(Node) || Node <- mem3:nodes()],
