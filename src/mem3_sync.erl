@@ -231,7 +231,7 @@ start_update_notifier() ->
     Db3 = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db",
         "_users")),
     couch_db_update_notifier:start_link(fun
-    ({updated, Db1}) ->
+    ({updated, Db}) when Db == Db1 ->
         Nodes = mem3:nodes(),
         Live = nodes(),
         [?MODULE:push(Db1, N) || N <- Nodes, lists:member(N, Live)];
