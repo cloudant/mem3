@@ -180,7 +180,14 @@ handle_replication_exit(State, Pid) ->
     {noreply, NewState}.
 
 start_push_replication(#job{name=Name, node=Node}) ->
-    spawn_link(mem3_rep, go, [Name, Node]).
+    spawn_link(fun() ->
+        case mem3_rep:go(Name, Node) of
+            {ok, Pending} when Pending > 0 ->
+                exit({pending_changes, Pending});
+            _ ->
+                ok
+        end
+    end).
 
 add_to_queue(State, #job{name=DbName, node=Node} = Job) ->
     #state{dict=D, waiting=Waiting} = State,
