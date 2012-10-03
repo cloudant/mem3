@@ -105,12 +105,28 @@ shards_int(DbName, Options) ->
             node = node(),
             name = ShardDbName,
             dbname = ShardDbName,
-            range = [0, (2 bsl 31)-1]}];
+            range = [0, mem3_util:ringtop(DbName)]}];
     _ ->
         mem3_shards:for_db(DbName, Options)
     end.
 
+<<<<<<< HEAD
 -spec shards(DbName::iodata(), DocId::binary()) -> [#shard{}].
+=======
+
+-spec shards(DbName::iodata(), Doc::#doc{}) -> [#shard{}].
+shards(DbName, Doc) when is_list(DbName) ->
+    shards(?l2b(DbName), Doc);
+
+shards(DbName, Doc) when is_record(Doc, doc) ->
+    mem3_shards:for_doc(DbName, Doc);
+
+shards(DbName, DocId) when is_list(DbName) ->
+    shards(list_to_binary(DbName), DocId);
+
+shards(DbName, DocId) when is_list(DocId) ->
+    shards(DbName, list_to_binary(DocId));
+
 shards(DbName, DocId) ->
     shards_int(DbName, DocId, []).
 
