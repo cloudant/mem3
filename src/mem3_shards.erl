@@ -70,7 +70,7 @@ for_docid(DbName, DocId) ->
     end.
 
 for_doc(DbName, Doc) ->
-    {HashKey, NewDoc} = mem3_util:hash(DbName, Doc),
+    HashKey = mem3_util:hash(DbName, Doc),
     Head = #shard{
         name = '_',
         node = '_',
@@ -81,12 +81,12 @@ for_doc(DbName, Doc) ->
     Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
     try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
         [] ->
-            {load_shards_from_disk(DbName, Doc#doc.id), NewDoc};
+            {load_shards_from_disk(DbName, Doc#doc.id), HashKey};
         Shards ->
             gen_server:cast(?MODULE, {cache_hit, DbName}),
-            {Shards, NewDoc}
+            {Shards, HashKey}
     catch error:badarg ->
-        {load_shards_from_disk(DbName, Doc#doc.id), NewDoc}
+        {load_shards_from_disk(DbName, Doc#doc.id), HashKey}
     end.
 
 config_for_db(DbName) ->
