@@ -34,8 +34,7 @@ mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
      % 10 char precision can be achieved with 50 bits, so 1 bsl 64 is a good ringtop
      RingTop = mem3_util:ringtop(DbName), 
      Precision = ((byte_size(binary:encode_unsigned(RingTop)) - 1) * 8) div 5,
-     Hash = geohash(X, Y, Precision),
-     {geohash(X, Y, Precision), Doc#doc{hash_id=Hash}};
+     geohash(X, Y, Precision);
   null ->
     throw({bad_request, <<"Document must be in geojson format">>})
   end;
