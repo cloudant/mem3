@@ -26,6 +26,7 @@
 -record(bbox, {minx=-180, miny=-90, maxx=180, maxy=90}).
 
 -define(GEOHASH, "0123456789bcdefghjkmnpqrstuvwxyz").
+-define(TYPE, geo).
 
 mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
   case get_xycenter(Doc#doc.body) of
@@ -34,7 +35,8 @@ mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
      % 10 char precision can be achieved with 50 bits, so 1 bsl 64 is a good ringtop
      RingTop = mem3_util:ringtop(DbName), 
      Precision = ((byte_size(binary:encode_unsigned(RingTop)) - 1) * 8) div 5,
-     geohash(X, Y, Precision);
+     Hash = geohash(X, Y, Precision),
+     {?TYPE, Hash};
   null ->
     throw({bad_request, <<"Document must be in geojson format">>})
   end;
@@ -42,27 +44,16 @@ mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
 
 mem3_hash(DbName, <<"foo">>) ->
   % do nothing, this is a dummy run to calculate number of shards in database
-  0;
+  {?TYPE, 0};
 
 mem3_hash(DbName, DocId) ->
-  case fabric:open_doc(mem3:dbname(DbName), DocId, []) of 
-  {ok, Doc} ->
-    % scan doc for geojson
-    % for now assume bbox or point is specified and that the projection is epsg:4326 (wgs84 lat lon) and the centre
-    % is computed in cartesian
-    case get_xycenter(Doc) of
-    {X, Y} ->
-       % get precision from config, this is fixed when the database is created
-       % 10 char precision can be achieved with 50 bits, so 1 bsl 64 is a good ringtop
-       RingTop = mem3_util:ringtop(DbName), 
-       Precision = RingTop div 5,
-       geohash(X, Y, Precision);
-    null ->
-      throw({bad_request, <<"Document must be in geojson format">>})
-    end;
-  {not_found, _} ->
-    throw({bad_request, <<"Document not found">>})        
-  end.
+  Id = ?b2l(DocId),
+  case string:tokens(Id, "-") of
+  [_, Hash] ->
+    list_to_integer(Hash);
+  _ ->
+    throw({bad_request, <<"Document not found">>})
+  end.  
 
 geohash(X, Y, _Precision) when (X > 180) or (X < -180) or (Y < -90) or (Y > 90) ->
   throw({bad_request, lists:flatten(io_lib:format("Geohash Lat/Lon ~p, ~p out of bounds", [Y, X]))});

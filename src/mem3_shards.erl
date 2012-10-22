@@ -60,7 +60,6 @@ for_db(DbName, Options) ->
     end.
 
 for_docid(DbName, DocId) ->
-<<<<<<< HEAD
     for_docid(DbName, DocId, []).
 
 for_docid(DbName, DocId, Options) ->
@@ -98,7 +97,7 @@ for_docid(DbName, DocId, Options) ->
     end.
 
 for_doc(DbName, Doc) ->
-    HashKey = mem3_util:hash(DbName, Doc),
+    {HashType, HashKey} = mem3_util:hash(DbName, Doc),
     Head = #shard{
         name = '_',
         node = '_',
@@ -109,12 +108,12 @@ for_doc(DbName, Doc) ->
     Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
     try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
         [] ->
-            {load_shards_from_disk(DbName, Doc#doc.id), HashKey};
+            {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}};
         Shards ->
             gen_server:cast(?MODULE, {cache_hit, DbName}),
-            {Shards, HashKey}
+            {Shards, {HashType, HashKey}}
     catch error:badarg ->
-        {load_shards_from_disk(DbName, Doc#doc.id), HashKey}
+        {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
     end.
 
 config_for_db(DbName) ->
@@ -333,12 +332,16 @@ load_shards_from_db(#db{} = ShardDb, DbName) ->
 
 load_shards_from_disk(DbName, DocId)->
     Shards = load_shards_from_disk(DbName),
+<<<<<<< HEAD
     HashKey = mem3_util:hash(DbName, DocId),
     [S || S <- Shards, in_range(S, HashKey)].
 
 in_range(Shard, HashKey) ->
     [B, E] = mem3:range(Shard),
     B =< HashKey andalso HashKey =< E.
+=======
+    {_, HashKey} = mem3_util:hash(DbName, DocId),
+>>>>>>> changed hash calculation to return a hash type
     [S || #shard{range = [B,E]} = S <- Shards, B =< HashKey, HashKey =< E].
 
 create_if_missing(Name) ->
