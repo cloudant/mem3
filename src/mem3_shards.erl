@@ -70,7 +70,7 @@ for_docid(DbName, DocId) ->
     end.
 
 for_doc(DbName, Doc) ->
-    HashKey = mem3_util:hash(DbName, Doc),
+    {HashType, HashKey} = mem3_util:hash(DbName, Doc),
     Head = #shard{
         name = '_',
         node = '_',
@@ -81,12 +81,12 @@ for_doc(DbName, Doc) ->
     Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
     try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
         [] ->
-            {load_shards_from_disk(DbName, Doc#doc.id), HashKey};
+            {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}};
         Shards ->
             gen_server:cast(?MODULE, {cache_hit, DbName}),
-            {Shards, HashKey}
+            {Shards, {HashType, HashKey}}
     catch error:badarg ->
-        {load_shards_from_disk(DbName, Doc#doc.id), HashKey}
+        {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
     end.
 
 config_for_db(DbName) ->
@@ -296,7 +296,7 @@ load_shards_from_db(#db{} = ShardDb, DbName) ->
 
 load_shards_from_disk(DbName, DocId)->
     Shards = load_shards_from_disk(DbName),
-    HashKey = mem3_util:hash(DbName, DocId),
+    {_, HashKey} = mem3_util:hash(DbName, DocId),
     [S || #shard{range = [B,E]} = S <- Shards, B =< HashKey, HashKey =< E].
 
 create_if_missing(Name) ->

@@ -23,7 +23,7 @@ mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
   mem3_hash(DbName, Doc#doc.id); 
 
 mem3_hash(_DbName, DocId) when is_binary(DocId) ->
-  erlang:crc32(DocId);
+  {default, erlang:crc32(DocId)};
 
 mem3_hash(_DbName, DocId) ->
   erlang:crc32(term_to_binary((DocId))).
