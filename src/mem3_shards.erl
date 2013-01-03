@@ -35,6 +35,40 @@
 -define(SHARDS, mem3_shards).
 -define(ATIMES, mem3_atimes).
 
+-define(DBS_VALIDATION_FUNCTION, <<"
+  function(newDoc, oldDoc) {
+    var i, range, node;
+    if (!newDoc.by_node) {
+      throw({forbidden: \"by_node is mandatory\"});
+    }
+    if (!newDoc.by_range) {
+      throw({forbidden: \"by_range is mandatory\"});
+    }
+    for (node in newDoc.by_node) {
+      for (i in newDoc.by_node[node]) {
+        range = newDoc.by_node[node][i];
+        if(!newDoc.by_range[range]) {
+          throw({forbidden: \"by_range for \" + range + \" is missing\"});
+        }
+        if(newDoc.by_range[range].indexOf(node) === -1) {
+          throw({forbidden : \"by_range for \" + range + \" is missing \" + node});
+        }
+      }
+    }
+    for (range in newDoc.by_range) {
+      for (i in newDoc.by_range[range]) {
+        node = newDoc.by_range[range][i];
+        if(!newDoc.by_node[node]) {
+          throw({forbidden: \"by_node for \" + node + \" is missing\"});
+        }
+        if (newDoc.by_node[node].indexOf(range) === -1) {
+          throw({forbidden: \"by_node for \" + node + \" is missing \" + range});
+        }
+      }
+    }
+  }
+  ">>).
+
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -87,8 +121,7 @@ local(DbName) ->
     lists:filter(Pred, for_db(DbName)).
 
 fold(Fun, Acc) ->
-    DbName = couch_config:get("mem3", "shards_db", "dbs"),
-    {ok, Db} = mem3_util:ensure_exists(DbName),
+    {ok, Db} = ensure_dbs_db_exists(),
     FAcc = {Db, Fun, Acc},
     try
         {ok, _, LastAcc} = couch_db:enum_docs(Db, fun fold_fun/3, FAcc, []),
@@ -180,14 +213,12 @@ fold_fun(#doc_info{}=DI, _, {Db, UFun, UAcc}) ->
     end.
 
 get_update_seq() ->
-    DbName = couch_config:get("mem3", "shards_db", "dbs"),
-    {ok, Db} = mem3_util:ensure_exists(DbName),
+    {ok, Db} = ensure_dbs_db_exists(),
     couch_db:close(Db),
     Db#db.update_seq.
 
 listen_for_changes(Since) ->
-    DbName = couch_config:get("mem3", "shards_db", "dbs"),
-    {ok, Db} = mem3_util:ensure_exists(DbName),
+    {ok, Db} = ensure_dbs_db_exists(),
     Args = #changes_args{
         feed = "continuous",
         since = Since,
@@ -225,8 +256,7 @@ changes_callback(timeout, _) ->
     ok.
 
 load_shards_from_disk(DbName) when is_binary(DbName) ->
-    X = ?l2b(couch_config:get("mem3", "shard_db", "dbs")),
-    {ok, Db} = mem3_util:ensure_exists(X),
+    {ok, Db} = ensure_dbs_db_exists(),
     try
         load_shards_from_db(Db, DbName)
     after
@@ -320,3 +350,39 @@ cache_clear(St) ->
     true = ets:delete_all_objects(?ATIMES),
     St#st{cur_size=0}.
 
+ensure_dbs_db_exists() ->
+    DbName = couch_config:get("mem3", "shards_db", "dbs"),
+    case mem3_util:ensure_exists(DbName) of
+        {ok, Db} ->
+            ensure_dbs_ddoc_exists(Db, <<"_design/_validation">>),
+            {ok, Db};
+        Else ->
+            Else
+    end.
+
+ensure_dbs_ddoc_exists(Db, DDocId) ->
+    case couch_db:open_doc(Db, DDocId) of
+        {not_found, _Reason} ->
+            {ok, DDoc} = dbs_design_doc(DDocId),
+            {ok, _} = couch_db:update_doc(Db, DDoc, []);
+        {ok, Doc} ->
+            {Props} = couch_doc:to_json_obj(Doc, []),
+            case couch_util:get_value(<<"validate_doc_update">>, Props, []) of
+                ?DBS_VALIDATION_FUNCTION ->
+                    ok;
+                _ ->
+                    Props1 = lists:keyreplace(<<"validate_doc_update">>, 1, Props,
+                                              {<<"validate_doc_update">>,
+                                               ?DBS_VALIDATION_FUNCTION}),
+                    couch_db:update_doc(Db, couch_doc:from_json_obj({Props1}), [])
+            end
+    end,
+    ok.
+
+dbs_design_doc(DocId) ->
+    Props = [
+             {<<"_id">>, DocId},
+             {<<"language">>, <<"javascript">>},
+             {<<"validate_doc_update">>, ?DBS_VALIDATION_FUNCTION}
+            ],
+    {ok, couch_doc:from_json_obj({Props})}.
