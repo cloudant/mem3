@@ -118,6 +118,9 @@ init([]) ->
     ok = config:listen_for_changes(?MODULE, nil),
     SizeList = config:get("mem3", "shard_cache_size", "25000"),
     {Pid, _} = spawn_monitor(fun() -> listen_for_changes(get_update_seq()) end),
+    folsom_metrics:new_counter([dbcore, mem3, shard_cache, hit]),
+    folsom_metrics:new_counter([dbcore, mem3, shard_cache, miss]),
+    folsom_metrics:new_counter([dbcore, mem3, shard_cache, eviction]),
     {ok, #st{
         max_size = list_to_integer(SizeList),
         cur_size = 0,
@@ -133,14 +136,14 @@ handle_call(_Call, _From, St) ->
     {noreply, St}.
 
 handle_cast({cache_hit, DbName}, St) ->
-    margaret_counter:increment([dbcore, mem3, shard_cache, hit]),
+    folsom_metrics:notify([dbcore, mem3, shard_cache, hit], {inc, 1}),
     cache_hit(DbName),
     {noreply, St};
 handle_cast({cache_insert, DbName, Shards}, St) ->
-    margaret_counter:increment([dbcore, mem3, shard_cache, miss]),
+    folsom_metrics:notify([dbcore, mem3, shard_cache, miss], {inc, 1}),
     {noreply, cache_free(cache_insert(St, DbName, Shards))};
 handle_cast({cache_remove, DbName}, St) ->
-    margaret_counter:increment([dbcore, mem3, shard_cache, eviction]),
+    folsom_metrics:notify([dbcore, mem3, shard_cache, eviction], {inc, 1}),
     {noreply, cache_remove(St, DbName)};
 handle_cast(_Msg, St) ->
     {noreply, St}.
