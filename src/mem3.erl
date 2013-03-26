@@ -15,7 +15,7 @@
 -module(mem3).
 
 -export([start/0, stop/0, restart/0, nodes/0, node_info/2, shards/1, shards/2,
-    choose_shards/2, n/1, dbname/1, ushards/1]).
+    choose_shards/2, n/1, dbname/1, range/1, ushards/1]).
 -export([get_shard/3, local_shards/1, fold_shards/2]).
 -export([sync_security/0, sync_security/1]).
 -export([compare_nodelists/0, compare_shards/1]).
@@ -213,6 +213,17 @@ dbname(DbName) when is_list(DbName) ->
 dbname(DbName) when is_binary(DbName) ->
     DbName;
 dbname(_) ->
+    erlang:error(badarg).
+
+range(#shard{range=Range}) ->
+    Range;
+range(<<"shards/", From:8/binary, "-", To:8/binary, "/", _/binary>>) ->
+    FromInt = list_to_integer(binary_to_list(From), 16),
+    ToInt = list_to_integer(binary_to_list(To), 16),
+    [FromInt, ToInt];
+range(#db{}=Db) ->
+    range(couch_db:name(Db));
+range(_) ->
     erlang:error(badarg).
 
 nodes_in_zone(Nodes, Zone) ->
