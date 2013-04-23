@@ -18,7 +18,8 @@
     node :: node() | '_',
     dbname :: binary(),
     range :: [non_neg_integer() | '$1' | '$2'],
-    ref :: reference() | 'undefined' | '_'
+    ref :: reference() | 'undefined' | '_',
+    order :: non_neg_integer()
 }).
 
 %% types

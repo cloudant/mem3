@@ -125,20 +125,21 @@ delete_db_doc(DbName, DocId, ShouldMutate) ->
     end.
 
 build_shards(DbName, DocProps) ->
-    {ByNode} = couch_util:get_value(<<"by_node">>, DocProps, {[]}),
+    {ByRange} = couch_util:get_value(<<"by_range">>, DocProps, {[]}),
     Suffix = couch_util:get_value(<<"shard_suffix">>, DocProps, ""),
-    lists:flatmap(fun({Node, Ranges}) ->
-        lists:map(fun(Range) ->
+    lists:flatmap(fun({Range, Nodes}) ->
+        lists:map(fun({Node, Order}) ->
             [B,E] = string:tokens(?b2l(Range), "-"),
             Beg = httpd_util:hexlist_to_integer(B),
             End = httpd_util:hexlist_to_integer(E),
             name_shard(#shard{
                 dbname = DbName,
                 node = to_atom(Node),
-                range = [Beg, End]
+                range = [Beg, End],
+                order = Order
             }, Suffix)
-        end, Ranges)
-    end, ByNode).
+        end, lists:zip(Nodes, lists:seq(1, length(Nodes))))
+    end, ByRange).
 
 to_atom(Node) when is_binary(Node) ->
     list_to_atom(binary_to_list(Node));
