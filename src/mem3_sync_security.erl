@@ -20,16 +20,16 @@
 -include("mem3.hrl").
 
 
-maybe_sync(#shard{}=Src, #shard{}=Dst) ->
-    case is_local(Src#shard.name) of
+maybe_sync(Src, Dst) ->
+    case is_local(mem3_shard:name(Src)) of
         false ->
             erlang:spawn(?MODULE, maybe_sync_int, [Src, Dst]);
         true ->
             ok
     end.
 
-maybe_sync_int(#shard{name=Name}=Src, Dst) ->
-    DbName = mem3:dbname(Name),
+maybe_sync_int(Src, Dst) ->
+    DbName = mem3:dbname(mem3_shard:name(Src)),
     case fabric:get_all_security(DbName, [{shards, [Src, Dst]}]) of
         {ok, WorkerObjs} ->
             Objs = [Obj || {_Worker, Obj} <- WorkerObjs],

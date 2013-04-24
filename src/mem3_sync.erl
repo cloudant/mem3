@@ -50,7 +50,11 @@ get_backlog() ->
 
 push(#shard{name = Name}, Target) ->
     push(Name, Target);
+push({shard, Name, _, _, _, _}, Target) -> % upgrade clause
+    push(Name, Target);
 push(Name, #shard{node=Node}) ->
+    push(Name, Node);
+push(Name, {shard, _, Node, _, _, _}) -> % upgrade clause
     push(Name, Node);
 push(Name, Node) ->
     push(#job{name = Name, node = Node}).
@@ -244,21 +248,28 @@ initial_sync(Live) ->
     {_, _, Shards} = mem3_shards:fold(fun initial_sync_fold/2, Acc),
     submit_replication_tasks(node(), Live, Shards).
 
-initial_sync_fold(#shard{dbname = Db} = Shard, {LocalNode, Live, AccShards}) ->
+initial_sync_fold(Shard, {LocalNode, Live, AccShards}) ->
+    Db = mem3_shard:dbname(Shard),
     case AccShards of
-    [#shard{dbname = AccDb} | _] when Db =/= AccDb ->
-        submit_replication_tasks(LocalNode, Live, AccShards),
-        {LocalNode, Live, [Shard]};
+    [Shard | _] ->
+        case Db =/= mem3_shard:dbname(Shard) of
+        true ->
+            submit_replication_tasks(LocalNode, Live, AccShards),
+            {LocalNode, Live, [Shard]};
+        false ->
+            {LocalNode, Live, [Shard|AccShards]}
+        end;
     _ ->
         {LocalNode, Live, [Shard|AccShards]}
     end.
 
 submit_replication_tasks(LocalNode, Live, Shards) ->
-    SplitFun = fun(#shard{node = Node}) -> Node =:= LocalNode end,
+    SplitFun = fun(S0) -> mem3_shard:node(S0) =:= LocalNode end,
     {Local, Remote} = lists:partition(SplitFun, Shards),
-    lists:foreach(fun(#shard{name = ShardName}) ->
-        [sync_push(ShardName, N) || #shard{node=N, name=Name} <- Remote,
-            Name =:= ShardName, lists:member(N, Live)]
+    lists:foreach(fun(S1) ->
+        ShardName = mem3_shard:name(S1),
+        [sync_push(mem3_shard:name(S2), mem3_shard:node(S2)) || S2 <- Remote,
+            mem3_shard:name(S2) =:= ShardName, lists:member(mem3_shard:node(S2), Live)]
     end, Local).
 
 sync_push(ShardName, N) ->
@@ -279,11 +290,11 @@ start_update_notifier() ->
         % TODO deal with split/merged partitions by comparing keyranges
         try mem3:shards(mem3:dbname(ShardName)) of
         Shards ->
-            Targets = [S || #shard{node=N, name=Name} = S <- Shards,
-                N =/= node(), Name =:= ShardName],
+            Targets = [S || S <- Shards,
+                mem3_shard:node(S) =/= node(), mem3_shard:name(S) =:= ShardName],
             Live = nodes(),
-            [?MODULE:push(ShardName,N) || #shard{node=N} <- Targets,
-                lists:member(N, Live)]
+            [?MODULE:push(ShardName,mem3_shard:node(S)) || S <- Targets,
+                lists:member(mem3_shard:node(S), Live)]
         catch error:database_does_not_exist ->
             ok
         end;

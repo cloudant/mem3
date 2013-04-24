@@ -25,7 +25,7 @@ go(Source, Target) ->
 go(DbName, Node, Opts) when is_binary(DbName), is_atom(Node) ->
     go(#shard{name=DbName, node=node()}, #shard{name=DbName, node=Node}, Opts);
 
-go(#shard{} = Source, #shard{} = Target, Opts) ->
+go(Source, Target, Opts) when is_tuple(Source), is_tuple(Target) ->
     mem3_sync_security:maybe_sync(Source, Target),
     BatchSize = case proplists:get_value(batch_size, Opts) of
         BS when is_integer(BS), BS > 0 -> BS;
@@ -49,7 +49,7 @@ go(#shard{} = Source, #shard{} = Target, Opts) ->
     go(Acc).
 
 go(#acc{source=Source, batch_count=BC}=Acc) ->
-    case couch_db:open(Source#shard.name, [{user_ctx,?CTX}]) of
+    case couch_db:open(mem3_shard:name(Source), [{user_ctx,?CTX}]) of
     {ok, Db} ->
         Resp = try
             repl(Db, Acc)
@@ -79,10 +79,12 @@ repl(#db{name=DbName, seq_tree=Bt}=Db, #acc{localid=LocalId}=Acc0) ->
     {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
     {ok, couch_db:count_changes_since(Db, LastSeq)}.
 
-make_local_id(#shard{}=Source, #shard{}=Target) ->
+make_local_id(Source, Target) when is_tuple(Source), is_tuple(Target) ->
     make_local_id(Source, Target, undefined).
 
-make_local_id(#shard{node=SourceNode}, #shard{node=TargetNode}, Filter) ->
+make_local_id(Source, Target, Filter) when is_tuple(Source), is_tuple(Target) ->
+    SourceNode = mem3_shard:node(Source),
+    TargetNode = mem3_shard:node(Target),
     S = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(SourceNode))),
     T = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(TargetNode))),
     F = case is_function(Filter) of
@@ -122,7 +124,9 @@ filter_doc(Filter, FullDocInfo) when is_function(Filter) ->
 filter_doc(_, _) ->
     keep.
 
-replicate_batch(#acc{target = #shard{node=Node, name=Name}} = Acc) ->
+replicate_batch(#acc{target = Target} = Acc) ->
+    Node = mem3_shard:node(Target),
+    Name = mem3_shard:name(Target),
     case find_missing_revs(Acc) of
     [] ->
         ok;
@@ -133,7 +137,9 @@ replicate_batch(#acc{target = #shard{node=Node, name=Name}} = Acc) ->
     {ok, Acc#acc{revcount=0, infos=[]}}.
 
 find_missing_revs(Acc) ->
-    #acc{target = #shard{node=Node, name=Name}, infos = Infos} = Acc,
+    #acc{target = Target, infos = Infos} = Acc,
+    Node = mem3_shard:node(Target),
+    Name = mem3_shard:name(Target),
     IdsRevs = lists:map(fun(FDI) ->
         #doc_info{id=Id, revs=RevInfos} = couch_doc:to_doc_info(FDI),
         {Id, [R || #rev_info{rev=R} <- RevInfos]}
@@ -155,7 +161,8 @@ save_on_target(Node, Name, Docs) ->
 
 update_locals(Acc) ->
     #acc{seq=Seq, source=Db, target=Target, localid=Id} = Acc,
-    #shard{name=Name, node=Node} = Target,
+    Node = mem3_shard:node(Target),
+    Name = mem3_shard:name(Target),
     Doc = #doc{id = Id, body = {[
         {<<"seq">>, Seq},
         {<<"node">>, list_to_binary(atom_to_list(Node))},
@@ -182,7 +189,9 @@ rexi_call(Node, MFA) ->
         rexi_monitor:stop(Mon)
     end.
 
-calculate_start_seq(Db, #shard{node=Node, name=Name}, LocalId) ->
+calculate_start_seq(Db, Shard, LocalId) ->
+    Node = mem3_shard:node(Shard),
+    Name = mem3_shard:name(Shard),
     case couch_db:open_doc(Db, LocalId, []) of
     {ok, #doc{body = {SProps}}} ->
         Opts = [{user_ctx, ?CTX}, {io_priority, {internal_repl, Name}}],

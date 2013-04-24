@@ -58,7 +58,8 @@ for_docid(DbName, DocId) ->
         node = '_',
         dbname = DbName,
         range = ['$1','$2'],
-        ref = '_'
+        ref = '_',
+        order = '_'
     },
     Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
     try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
@@ -72,7 +73,9 @@ for_docid(DbName, DocId) ->
     end.
 
 get(DbName, Node, Range) ->
-    Res = lists:foldl(fun(#shard{node=N, range=R}=S, Acc) ->
+    Res = lists:foldl(fun(S, Acc) ->
+        N = mem3_shard:node(S),
+        R = mem3_shard:range(S),
         case {N, R} of
             {Node, Range} -> [S | Acc];
             _ -> Acc
@@ -85,7 +88,7 @@ get(DbName, Node, Range) ->
     end.
 
 local(DbName) ->
-    Pred = fun(#shard{node=Node}) when Node == node() -> true; (_) -> false end,
+    Pred = fun(S) -> mem3_shard:node(S) == node() end,
     lists:filter(Pred, for_db(DbName)).
 
 fold(Fun, Acc) ->
@@ -228,8 +231,8 @@ changes_callback({change, {Change}, _}, _) ->
             {Doc} ->
                 Shards = mem3_util:build_shards(DbName, Doc),
                 gen_server:cast(?MODULE, {cache_insert, DbName, Shards}),
-                [create_if_missing(Name) || #shard{name=Name, node=Node}
-                    <- Shards, Node =:= node()]
+                [create_if_missing(mem3_shard:name(S)) || S
+                    <- Shards, mem3_shard:node(S) =:= node()]
             end
         end
     end,
@@ -259,7 +262,10 @@ load_shards_from_db(#db{} = ShardDb, DbName) ->
 load_shards_from_disk(DbName, DocId)->
     Shards = load_shards_from_disk(DbName),
     HashKey = mem3_util:hash(DocId),
-    [S || #shard{range = [B,E]} = S <- Shards, B =< HashKey, HashKey =< E].
+    [S || S <- Shards, in_range(HashKey, mem3_shard:range(S))].
+
+in_range(HashKey, [B,E]) when B =< HashKey, HashKey =< E -> true;
+in_range(_, _)                                           -> false.
 
 create_if_missing(Name) ->
     DbDir = config:get("couchdb", "database_dir"),

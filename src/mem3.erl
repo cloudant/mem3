@@ -185,6 +185,8 @@ decode_placement_string(PlacementStr) ->
 -spec dbname(#shard{} | iodata()) -> binary().
 dbname(#shard{dbname = DbName}) ->
     DbName;
+dbname({shard, _, _, DbName, _, _}) -> % upgrade clause
+    DbName;
 dbname(<<"shards/", _:8/binary, "-", _:8/binary, "/", DbName/binary>>) ->
     list_to_binary(filename:rootname(binary_to_list(DbName)));
 dbname(DbName) when is_list(DbName) ->
@@ -198,20 +200,20 @@ nodes_in_zone(Nodes, Zone) ->
     [Node || Node <- Nodes, Zone == mem3:node_info(Node, <<"zone">>)].
 
 live_shards(DbName, Nodes) ->
-    [S || #shard{node=Node} = S <- shards(DbName), lists:member(Node, Nodes)].
+    [S || S <- shards(DbName), lists:member(mem3_shard:node(S), Nodes)].
 
 zone_map(Nodes) ->
     [{Node, node_info(Node, <<"zone">>)} || Node <- Nodes].
 
 group_by_proximity(Shards) ->
-    Nodes = [N || #shard{node=N} <- lists:ukeysort(#shard.node, Shards)],
+    Nodes = [mem3_Shard:node(S) || S <- lists:ukeysort(#shard.node, Shards)],
     group_by_proximity(Shards, zone_map(Nodes)).
 
 group_by_proximity(Shards, ZoneMap) ->
-    {Local, Remote} = lists:partition(fun(S) -> S#shard.node =:= node() end,
+    {Local, Remote} = lists:partition(fun(S) -> mem3_shard:node(S) =:= node() end,
         Shards),
     LocalZone = proplists:get_value(node(), ZoneMap),
-    Fun = fun(S) -> proplists:get_value(S#shard.node, ZoneMap) =:= LocalZone end,
+    Fun = fun(S) -> proplists:get_value(mem3_shard:node(S), ZoneMap) =:= LocalZone end,
     {SameZone, DifferentZone} = lists:partition(Fun, Remote),
     {Local, SameZone, DifferentZone}.
 
@@ -226,7 +228,9 @@ rotate_list(DbName, List) ->
     T ++ H.
 
 group_by_range(Shards) ->
-    Groups0 = lists:foldl(fun(#shard{range=Range}=Shard, Dict) ->
+    Groups0 = lists:foldl(fun(Shard0, Dict) ->
+        Shard = mem3_shard:upgrade(Shard0),
+        Range = Shard#shard.range,
         orddict:append(Range, Shard, Dict) end, orddict:new(), Shards),
     {_, Groups} = lists:unzip(Groups0),
     Groups.

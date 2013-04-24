@@ -22,18 +22,25 @@
          range/1,
          ref/1,
          order/1,
+         upgrade/1,
+         set_name/2,
+         set_node/2,
+         set_dbname/2,
          set_ref/2]).
 
 -include("mem3.hrl").
 
-name(Shard)         -> (upgrade_shard(Shard))#shard.name.
-node(Shard)         -> (upgrade_shard(Shard))#shard.node.
-dbname(Shard)       -> (upgrade_shard(Shard))#shard.dbname.
-range(Shard)        -> (upgrade_shard(Shard))#shard.range.
-ref(Shard)          -> (upgrade_shard(Shard))#shard.ref.
-order(Shard)        -> (upgrade_shard(Shard))#shard.order.
-set_ref(Shard, Ref) -> (upgrade_shard(Shard))#shard{ref=Ref}.
+name(Shard)               -> (upgrade(Shard))#shard.name.
+node(Shard)               -> (upgrade(Shard))#shard.node.
+dbname(Shard)             -> (upgrade(Shard))#shard.dbname.
+range(Shard)              -> (upgrade(Shard))#shard.range.
+ref(Shard)                -> (upgrade(Shard))#shard.ref.
+order(Shard)              -> (upgrade(Shard))#shard.order.
+set_ref(Shard, Ref)       -> (upgrade(Shard))#shard{ref=Ref}.
+set_dbname(Shard, DbName) -> (upgrade(Shard))#shard{dbname=DbName}.
+set_node(Shard, Node)     -> (upgrade(Shard))#shard{node=Node}.
+set_name(Shard, Name)     -> (upgrade(Shard))#shard{name=Name}.
 
-upgrade_shard(#shard{}=S) -> S;
-upgrade_shard({Name, Node, DbName, Range, Ref}) ->
+upgrade(#shard{}=S) -> S;
+upgrade({shard, Name, Node, DbName, Range, Ref}) ->
     #shard{name=Name, node=Node, dbname=DbName, range=Range, ref=Ref}.

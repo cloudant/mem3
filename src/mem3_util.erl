@@ -36,10 +36,12 @@ hash(Item) ->
 name_shard(Shard) ->
     name_shard(Shard, "").
 
-name_shard(#shard{dbname = DbName, range=[B,E]} = Shard, Suffix) ->
+name_shard(Shard, Suffix) ->
+    DbName = mem3_shard:dbname(Shard),
+    [B,E] = mem3_shard:range(Shard),
     Name = ["shards/", couch_util:to_hex(<<B:32/integer>>), "-",
         couch_util:to_hex(<<E:32/integer>>), "/", DbName, Suffix],
-    Shard#shard{name = ?l2b(Name)}.
+    mem3_shard:set_name(Shard, ?l2b(Name)).
 
 create_partition_map(DbName, N, Q, Nodes) ->
     create_partition_map(DbName, N, Q, Nodes, "").
@@ -48,7 +50,7 @@ create_partition_map(DbName, N, Q, Nodes, Suffix) ->
     UniqueShards = make_key_ranges((?RINGTOP) div Q, 0, []),
     Shards0 = lists:flatten([lists:duplicate(N, S) || S <- UniqueShards]),
     Shards1 = attach_nodes(Shards0, [], Nodes, []),
-    [name_shard(S#shard{dbname=DbName}, Suffix) || S <- Shards1].
+    [name_shard(mem3_shard:set_dbname(S, DbName), Suffix) || S <- Shards1].
 
 make_key_ranges(_, CurrentPos, Acc) when CurrentPos >= ?RINGTOP ->
     Acc;
@@ -66,7 +68,7 @@ attach_nodes([], Acc, _, _) ->
 attach_nodes(Shards, Acc, [], UsedNodes) ->
     attach_nodes(Shards, Acc, lists:reverse(UsedNodes), []);
 attach_nodes([S | Rest], Acc, [Node | Nodes], UsedNodes) ->
-    attach_nodes(Rest, [S#shard{node=Node} | Acc], Nodes, [Node | UsedNodes]).
+    attach_nodes(Rest, [mem3_shard:set_node(S, Node) | Acc], Nodes, [Node | UsedNodes]).
 
 open_db_doc(DocId) ->
     DbName = ?l2b(config:get("mem3", "shard_db", "dbs")),
@@ -214,10 +216,10 @@ ensure_exists(DbName) ->
 owner(DbName, DocId) ->
     Shards = mem3:shards(DbName, DocId),
     Nodes = [node()|nodes()],
-    LiveShards = [S || #shard{node=Node} = S <- Shards, lists:member(Node, Nodes)],
-    [#shard{node=Node}] = lists:usort(fun(#shard{name=A}, #shard{name=B}) ->
-                                              A =< B  end, LiveShards),
-    node() =:= Node.
+    LiveShards = [S || S <- Shards, lists:member(mem3_shard:node(S), Nodes)],
+    [S] = lists:usort(fun(A, B) ->
+        mem3_shard:name(A) =< mem3_shard:name(B) end, LiveShards),
+    node() =:= mem3_shard:node(S).
 
 is_deleted(Change) ->
     case couch_util:get_value(<<"deleted">>, Change) of
