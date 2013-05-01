@@ -37,6 +37,8 @@ maybe_sync_int(#shard{name=Name}=Src, Dst) ->
                 1 -> ok;
                 2 -> go(DbName)
             end;
+        {error, no_majority} ->
+            go(DbName);
         Else ->
             Args = [DbName, Else],
             twig:log(err, "Error checking security objects for ~s :: ~p", Args)
