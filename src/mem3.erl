@@ -240,13 +240,15 @@ group_by_proximity(Shards, ZoneMap) ->
     {Local, SameZone, DifferentZone}.
 
 choose_ushards(DbName, Shards) ->
-    [hd(G) || G <- [rotate_list(DbName, order_shards(G)) ||
-        G <- group_by_range(Shards)]].
+    Groups0 = group_by_range(Shards),
+    Groups1 = [rotate_list(term_to_binary({DbName, R}), order_shards(G))
+               || {R, G} <- Groups0],
+    [hd(G) || G <- Groups1].
 
-rotate_list(_DbName, []) ->
+rotate_list(_Key, []) ->
     [];
-rotate_list(DbName, List) ->
-    {H, T} = lists:split(erlang:crc32(DbName) rem length(List), List),
+rotate_list(Key, List) ->
+    {H, T} = lists:split(erlang:crc32(Key) rem length(List), List),
     T ++ H.
 
 order_shards([#ordered_shard{}|_]=OrderedShards) ->
@@ -255,10 +257,8 @@ order_shards(UnorderedShards) ->
     UnorderedShards.
 
 group_by_range(Shards) ->
-    Groups0 = lists:foldl(fun(Shard, Dict) ->
-        orddict:append(mem3:range(Shard), Shard, Dict) end, orddict:new(), Shards),
-    {_, Groups} = lists:unzip(Groups0),
-    Groups.
+    lists:foldl(fun(Shard, Dict) ->
+        orddict:append(mem3:range(Shard), Shard, Dict) end, orddict:new(), Shards).
 
 % quorum functions
 
