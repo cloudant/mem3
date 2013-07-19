@@ -146,6 +146,18 @@ handle_info({'EXIT', Active, Reason}, State) ->
         #job{name=OldDbName, node=OldNode} = Job ->
         twig:log(warn, "~s ~s ~s ~w", [?MODULE, OldDbName, OldNode, Reason]),
         case Reason of {pending_changes, Count} ->
+            case config:get("mem3", "pending_changes_metrics", "false") of
+                "true" ->
+                    Key = [
+                        mem3,
+                        pending_changes,
+                        OldNode,
+                        binary_to_atom(OldDbName, latin1)
+                    ],
+                    margaret_gauge:set(Key, Count);
+                 _ ->
+                    ok
+            end,
             maybe_resubmit(State, Job#job{pid = nil, count = Count});
         _ ->
             try mem3:shards(mem3:dbname(Job#job.name)) of _ ->
