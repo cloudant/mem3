@@ -226,7 +226,7 @@ ensure_exists(DbName) ->
 
 
 owner(DbName, DocId) ->
-    Nodes = lists:sort([node()|nodes()]),
+    Nodes = lists:sort([N || #shard{node=N} <- mem3:shards(DbName, DocId)]),
     node() =:= hd(rotate_list({DbName, DocId}, Nodes)).
 
 is_deleted(Change) ->
