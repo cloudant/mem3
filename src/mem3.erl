@@ -158,7 +158,7 @@ choose_shards(DbName, Options) when is_list(DbName) ->
 choose_shards(DbName, Options) ->
     try shards(DbName)
     catch error:E when E==database_does_not_exist; E==badarg ->
-        Nodes = mem3:nodes(),
+        Nodes = allowed_nodes(),
         case get_placement(Options) of
             undefined ->
                 choose_shards(DbName, Nodes, Options);
@@ -215,6 +215,9 @@ dbname(DbName) when is_binary(DbName) ->
     DbName;
 dbname(_) ->
     erlang:error(badarg).
+
+allowed_nodes() ->
+    [Node || Node <- mem3:nodes(), mem3:node_info(Node, <<"decom">>) =/= true].
 
 nodes_in_zone(Nodes, Zone) ->
     [Node || Node <- Nodes, Zone == mem3:node_info(Node, <<"zone">>)].
