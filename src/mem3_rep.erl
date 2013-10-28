@@ -1,6 +1,7 @@
 -module(mem3_rep).
 
 -export([go/2, go/3, changes_enumerator/3, make_local_id/2]).
+-export([save_checkpoint/2]).
 
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
@@ -156,14 +157,35 @@ save_on_target(Node, Name, Docs) ->
 update_locals(Acc) ->
     #acc{seq=Seq, source=Db, target=Target, localid=Id} = Acc,
     #shard{name=Name, node=Node} = Target,
-    Doc = #doc{id = Id, body = {[
+    Props0 = [
         {<<"seq">>, Seq},
         {<<"node">>, list_to_binary(atom_to_list(Node))},
         {<<"timestamp">>, list_to_binary(iso8601_timestamp())}
-    ]}},
-    {ok, _} = couch_db:update_doc(Db, Doc, []),
-    Options = [{user_ctx, ?CTX}, {io_priority, {internal_repl, Name}}],
-    rexi_call(Node, {fabric_rpc, update_docs, [Name, [Doc], Options]}).
+    ],
+    Doc = #doc{id = Id, body = {Props0}},
+    TgtSeq = rexi_call(Node, {?MODULE, save_checkpoint, [Name, Doc]}),
+    Props = [{<<"target_seq">>, TgtSeq} | Props0],
+    {ok, _} = couch_db:update_doc(Db, #doc{id = Id, body = {Props}}, []).
+
+save_checkpoint(DbName, #doc{body = {Props0}} = Doc0) ->
+    erlang:put(io_priority, {internal_repl, DbName}),
+    case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
+        {ok, #db{update_seq = Seq} = Db} ->
+            Doc = Doc0#doc{body = {[{<<"target_seq">>, Seq} | Props0]}},
+            rexi:reply(try couch_db:update_doc(Db, Doc, []) of
+                {ok, _} ->
+                    {ok, Seq};
+                Else ->
+                    {error, Else}
+            catch
+                Exception ->
+                    Exception;
+                error:Reason ->
+                    {error, Reason}
+            end);
+        Error ->
+            rexi:reply(Error)
+    end.
 
 rexi_call(Node, MFA) ->
     Mon = rexi_monitor:start([rexi_utils:server_pid(Node)]),
