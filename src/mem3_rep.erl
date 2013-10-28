@@ -1,7 +1,7 @@
 -module(mem3_rep).
 
 -export([go/2, go/3, changes_enumerator/3, make_local_id/2]).
--export([save_checkpoint/2]).
+-export([save_checkpoint/5]).
 
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
@@ -17,7 +17,8 @@
     localid,
     source,
     target,
-    filter
+    filter,
+    history
 }).
 
 go(Source, Target) ->
@@ -73,8 +74,8 @@ go(#acc{source=Source, batch_count=BC}=Acc) ->
 
 repl(#db{name=DbName, seq_tree=Bt}=Db, #acc{localid=LocalId}=Acc0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    Seq = calculate_start_seq(Db, Acc0#acc.target, LocalId),
-    Acc1 = Acc0#acc{source=Db, seq=Seq},
+    {Seq, History} = calculate_start_seq(Db, Acc0#acc.target, LocalId),
+    Acc1 = Acc0#acc{source=Db, seq=Seq, history=History},
     Fun = fun ?MODULE:changes_enumerator/3,
     {ok, _, Acc2} = couch_btree:fold(Bt, Fun, Acc1, [{start_key, Seq + 1}]),
     {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
@@ -155,26 +156,36 @@ save_on_target(Node, Name, Docs) ->
     ok.
 
 update_locals(Acc) ->
-    #acc{seq=Seq, source=Db, target=Target, localid=Id} = Acc,
+    #acc{seq=Seq, source=Db, target=Target, localid=Id, history=History} = Acc,
     #shard{name=Name, node=Node} = Target,
-    Props0 = [
-        {<<"seq">>, Seq},
-        {<<"node">>, list_to_binary(atom_to_list(Node))},
+    NewEntry0 = [
+        {<<"source_seq">>, Seq},
+        {<<"source_node">>, atom_to_binary(node(), utf8)},
+        {<<"target_node">>, atom_to_binary(Node, utf8)},
         {<<"timestamp">>, list_to_binary(iso8601_timestamp())}
     ],
-    Doc = #doc{id = Id, body = {Props0}},
-    TgtSeq = rexi_call(Node, {?MODULE, save_checkpoint, [Name, Doc]}),
-    Props = [{<<"target_seq">>, TgtSeq} | Props0],
-    {ok, _} = couch_db:update_doc(Db, #doc{id = Id, body = {Props}}, []).
+    FinalBody = rexi_call(Node, {?MODULE, save_checkpoint, [
+        Name,
+        Id,
+        Seq,
+        NewEntry0,
+        History
+    ]}),
+    {ok, _} = couch_db:update_doc(Db, #doc{id = Id, body = FinalBody}, []).
 
-save_checkpoint(DbName, #doc{body = {Props0}} = Doc0) ->
+save_checkpoint(DbName, Id, SourceSeq, NewEntry0, History0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
-        {ok, #db{update_seq = Seq} = Db} ->
-            Doc = Doc0#doc{body = {[{<<"target_seq">>, Seq} | Props0]}},
+        {ok, #db{update_seq = TargetSeq} = Db} ->
+            NewEntry = [{<<"target_seq">>, TargetSeq} | NewEntry0],
+            Body = {[
+                {<<"seq">>, SourceSeq},
+                {<<"history">>, add_checkpoint(NewEntry, History0)}
+            ]},
+            Doc = #doc{id = Id, body = Body},
             rexi:reply(try couch_db:update_doc(Db, Doc, []) of
                 {ok, _} ->
-                    {ok, Seq};
+                    {ok, Body};
                 Else ->
                     {error, Else}
             catch
@@ -212,7 +223,8 @@ calculate_start_seq(Db, #shard{node=Node, name=Name}, LocalId) ->
         #doc{body = {TProps}} ->
             SourceSeq = couch_util:get_value(<<"seq">>, SProps, 0),
             TargetSeq = couch_util:get_value(<<"seq">>, TProps, 0),
-            erlang:min(SourceSeq, TargetSeq)
+            Seq = erlang:min(SourceSeq, TargetSeq),
+            {Seq, couch_util:get_value(<<"history">>, SProps, [])}
         catch error:{not_found, _} ->
             0
         end;
@@ -231,3 +243,44 @@ iso8601_timestamp() ->
     {{Year,Month,Date},{Hour,Minute,Second}} = calendar:now_to_datetime(Now),
     Format = "~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B.~6.10.0BZ",
     io_lib:format(Format, [Year, Month, Date, Hour, Minute, Second, Micro]).
+
+add_checkpoint(Props, History) ->
+    %% Split checkpoints into buckets of exponentially increasing delta from
+    %% current sequence, keep the newest and oldest checkpoint in each bucket.
+    NewSeq = couch_util:get_value(<<"source_seq">>, Props),
+    {_, High, Low, Result} = lists:foldl(fun({Entry}, Acc) ->
+        {Shift, High, Low, Keep} = Acc,
+        CurSeq = couch_util:get_value(<<"source_seq">>, Entry),
+        if (NewSeq - CurSeq) >  (2 bsl Shift) ->
+            {Shift+1, {Entry}, nil , [Low, High | Keep]};
+        true ->
+            {Shift, High, {Entry}, Keep}
+        end
+    end, {2, {Props}, nil, []}, History),
+    lists:reverse(lists:filter(fun(E) -> E /= nil end, [Low, High | Result])).
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+add_checkpoint_test() ->
+    Out = add_checkpoint([{<<"source_seq">>, 1000}], [
+        {[{<<"source_seq">>, 995}]},
+        {[{<<"source_seq">>, 993}]},
+        {[{<<"source_seq">>, 990}]},
+        {[{<<"source_seq">>, 980}]},
+        {[{<<"source_seq">>, 975}]},
+        {[{<<"source_seq">>, 970}]}
+    ]),
+    Correct = [
+        % 0 - 8 bucket
+        {[{<<"source_seq">>, 1000}]},
+        {[{<<"source_seq">>, 993}]},
+        % 8 - 16 bucket (only one entry, test that nil is filtered out)
+        {[{<<"source_seq">>, 990}]},
+        % 16 - 32 bucket
+        {[{<<"source_seq">>, 980}]},
+        {[{<<"source_seq">>, 970}]}
+    ],
+    ?assertEqual(Correct, Out).
+
+-endif.
