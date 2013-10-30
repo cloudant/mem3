@@ -177,7 +177,11 @@ save_checkpoint(DbName, Id, SourceSeq, NewEntry0, History0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
         {ok, #db{update_seq = TargetSeq} = Db} ->
-            NewEntry = [{<<"target_seq">>, TargetSeq} | NewEntry0],
+            NewEntry = [
+                {<<"target_seq">>, TargetSeq},
+                {<<"target_uuid">>, couch_db:get_uuid(Db)}
+                | NewEntry0
+            ],
             Body = {[
                 {<<"seq">>, SourceSeq},
                 {<<"history">>, add_checkpoint(NewEntry, History0)}
