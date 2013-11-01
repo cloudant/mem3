@@ -1,7 +1,10 @@
 -module(mem3_rep).
 
 -export([go/2, go/3, changes_enumerator/3, make_local_id/2]).
--export([save_checkpoint/5]).
+-export([
+    load_checkpoint/3,
+    save_checkpoint/5
+]).
 
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
@@ -13,12 +16,13 @@
     batch_count,
     revcount = 0,
     infos = [],
-    seq,
+    seq = 0,
     localid,
     source,
     target,
     filter,
-    history
+    history = [],
+    target_uuid
 }).
 
 go(Source, Target) ->
@@ -39,11 +43,9 @@ go(#shard{} = Source, #shard{} = Target, Opts) ->
         _ -> 1
     end,
     Filter = proplists:get_value(filter, Opts),
-    LocalId = make_local_id(Source, Target, Filter),
     Acc = #acc{
         batch_size = BatchSize,
         batch_count = BatchCount,
-        localid = LocalId,
         source = Source,
         target = Target,
         filter = Filter
@@ -72,21 +74,23 @@ go(#acc{source=Source, batch_count=BC}=Acc) ->
         {error, missing_source}
     end.
 
-repl(#db{name=DbName, seq_tree=Bt}=Db, #acc{localid=LocalId}=Acc0) ->
+repl(#db{name=DbName, seq_tree=Bt}=Db, Acc0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    {Seq, History} = calculate_start_seq(Db, Acc0#acc.target, LocalId),
-    Acc1 = Acc0#acc{source=Db, seq=Seq, history=History},
+    #acc{seq=Seq} = Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
     Fun = fun ?MODULE:changes_enumerator/3,
     {ok, _, Acc2} = couch_btree:fold(Bt, Fun, Acc1, [{start_key, Seq + 1}]),
     {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
     {ok, couch_db:count_changes_since(Db, LastSeq)}.
 
-make_local_id(#shard{}=Source, #shard{}=Target) ->
+make_local_id(Source, Target) ->
     make_local_id(Source, Target, undefined).
 
 make_local_id(#shard{node=SourceNode}, #shard{node=TargetNode}, Filter) ->
-    S = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(SourceNode))),
-    T = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(TargetNode))),
+    make_local_id(SourceNode, TargetNode, Filter);
+
+make_local_id(SourceThing, TargetThing, Filter) ->
+    S = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(SourceThing))),
+    T = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(TargetThing))),
     F = case is_function(Filter) of
         true ->
             {new_uniq, Hash} = erlang:fun_info(Filter, new_uniq),
@@ -173,6 +177,28 @@ update_locals(Acc) ->
     ]}),
     {ok, _} = couch_db:update_doc(Db, #doc{id = Id, body = FinalBody}, []).
 
+load_checkpoint(DbName, SourceNode, SourceUUID) ->
+    erlang:put(io_priority, {internal_repl, DbName}),
+    case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
+    {ok, Db} ->
+        TargetUUID = couch_db:get_uuid(Db),
+        NewId = make_local_id(SourceUUID, TargetUUID),
+        case couch_db:open_doc(Db, NewId, []) of
+        {ok, Doc} ->
+            rexi:reply({ok, {TargetUUID, Doc}});
+        {not_found, _} ->
+            OldId = make_local_id(SourceNode, node()),
+            case couch_db:open_doc(Db, OldId, []) of
+            {ok, Doc} ->
+                rexi:reply({ok, {TargetUUID, NewId, Doc}});
+            {not_found, _} ->
+                rexi:reply({ok, {TargetUUID, NewId, #doc{id = NewId}}})
+            end
+        end;
+    Error ->
+        rexi:reply(Error)
+    end.
+
 save_checkpoint(DbName, Id, SourceSeq, NewEntry0, History0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
@@ -219,21 +245,24 @@ rexi_call(Node, MFA) ->
         rexi_monitor:stop(Mon)
     end.
 
-calculate_start_seq(Db, #shard{node=Node, name=Name}, LocalId) ->
-    case couch_db:open_doc(Db, LocalId, []) of
-    {ok, #doc{body = {SProps}}} ->
-        Opts = [{user_ctx, ?CTX}, {io_priority, {internal_repl, Name}}],
-        try rexi_call(Node, {fabric_rpc, open_doc, [Name, LocalId, Opts]}) of
-        #doc{body = {TProps}} ->
+calculate_start_seq(Acc) ->
+    #acc{
+        source = Db,
+        target = #shard{node=Node, name=Name}
+    } = Acc,
+    %% Give the target our UUID and ask it to return the checkpoint doc
+    {UUID, NewId, #doc{id = OldId, body = {TProps}}} = rexi_call(Node,
+        {?MODULE, load_checkpoint, [Name, node(), couch_db:get_uuid(Db)]}),
+    Acc1 = Acc#acc{target_uuid = UUID, localid = NewId},
+    case couch_db:open_doc(Db, OldId, []) of
+        {ok, #doc{body = {SProps}}} ->
             SourceSeq = couch_util:get_value(<<"seq">>, SProps, 0),
             TargetSeq = couch_util:get_value(<<"seq">>, TProps, 0),
             Seq = erlang:min(SourceSeq, TargetSeq),
-            {Seq, couch_util:get_value(<<"history">>, SProps, [])}
-        catch error:{not_found, _} ->
-            0
-        end;
-    {not_found, _} ->
-        0
+            History = couch_util:get_value(<<"history">>, SProps, []),
+            Acc1#acc{seq = Seq, history = History};
+        {not_found, _} ->
+            Acc1
     end.
 
 open_doc_revs(Db, #full_doc_info{id=Id, rev_tree=RevTree}, Revs) ->
