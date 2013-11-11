@@ -111,8 +111,11 @@ shards_int(DbName, Options) ->
     end.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 -spec shards(DbName::iodata(), DocId::binary()) -> [#shard{}].
 =======
+=======
+>>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
 
 -spec shards(DbName::iodata(), Doc::#doc{}) -> [#shard{}].
 shards(DbName, Doc) when is_list(DbName) ->
