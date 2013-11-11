@@ -17,10 +17,7 @@
 -export([hash/2, name_shard/2, create_partition_map/5, build_shards/2,
     n_val/2, z_val/3, to_atom/1, to_integer/1, write_db_doc/1, delete_db_doc/1,
     shard_info/1, ensure_exists/1, open_db_doc/1, ringtop/1]).
-<<<<<<< HEAD
-=======
 -export([owner/2]).
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
 
 %% do not use outside mem3.
 -export([build_ordered_shards/2, downcast/1]).
@@ -283,14 +280,6 @@ downcast(#ordered_shard{}=S) ->
       };
 downcast(Shards) when is_list(Shards) ->
     [downcast(Shard) || Shard <- Shards].
-=======
-    Shards = mem3:shards(DbName, DocId),
-    Nodes = [node()|nodes()],
-    LiveShards = [S || #shard{node=Node} = S <- Shards, lists:member(Node, Nodes)],
-    [#shard{node=Node}] = lists:usort(fun(#shard{name=A}, #shard{name=B}) ->
-                                              A =< B  end, LiveShards),
-    node() =:= Node.
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
 
 hashfun(undefined) ->
    {ok, {"crc32hash", "mem3_hash"}};
@@ -306,8 +295,4 @@ hashfun(DbName) ->
         false ->
            {ok, {"crc32hash", "mem3_hash"}}
         end
-<<<<<<< HEAD
     end.
-=======
-    end.
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9

@@ -65,7 +65,6 @@ for_db(DbName, Options) ->
     end.
 
 for_docid(DbName, DocId) ->
-<<<<<<< HEAD
     for_docid(DbName, DocId, []).
 
 for_docid(DbName, DocId, Options) ->
@@ -104,9 +103,6 @@ for_docid(DbName, DocId, Options) ->
 
 for_doc(DbName, Doc) ->
     {HashType, HashKey} = mem3_util:hash(DbName, Doc),
-=======
-    HashKey = mem3_util:hash(DbName, DocId),
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
     Head = #shard{
         name = '_',
         node = '_',
@@ -125,8 +121,6 @@ for_doc(DbName, Doc) ->
         {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
     end.
 
-<<<<<<< HEAD
-=======
 for_doc(DbName, Doc) ->
     {HashType, HashKey} = mem3_util:hash(DbName, Doc),
     Head = #shard{
@@ -147,7 +141,6 @@ for_doc(DbName, Doc) ->
         {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
     end.
 
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
 config_for_db(DbName) ->
   gen_server:call(?MODULE, {get_config, DbName}).
 
