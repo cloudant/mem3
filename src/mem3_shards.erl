@@ -21,14 +21,9 @@
 -export([handle_config_change/5]).
 
 -export([start_link/0]).
-<<<<<<< HEAD
 
 -export([for_db/1, for_db/2, for_docid/2, for_docid/3, get/3, local/1, fold/2]).
 -export([set_max_size/1]).
-=======
--export([for_db/1, for_docid/2, for_doc/2, get/3, local/1, fold/2, config_for_db/1]).
--export([set_max_size/1, config_change/3]).
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
 
 -record(st, {
     max_size = 25000,
@@ -120,29 +115,6 @@ for_doc(DbName, Doc) ->
     catch error:badarg ->
         {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
     end.
-
-for_doc(DbName, Doc) ->
-    {HashType, HashKey} = mem3_util:hash(DbName, Doc),
-    Head = #shard{
-        name = '_',
-        node = '_',
-        dbname = DbName,
-        range = ['$1','$2'],
-        ref = '_'
-    },
-    Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
-    try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
-        [] ->
-            {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}};
-        Shards ->
-            gen_server:cast(?MODULE, {cache_hit, DbName}),
-            {Shards, {HashType, HashKey}}
-    catch error:badarg ->
-        {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
-    end.
-
-config_for_db(DbName) ->
-  gen_server:call(?MODULE, {get_config, DbName}).
 
 get(DbName, Node, Range) ->
     Res = lists:foldl(fun(#shard{node=N, range=R}=S, Acc) ->
@@ -322,23 +294,15 @@ changes_callback({change, {Change}, _}, _) ->
                 twig:log(error, "missing partition table for ~s: ~p",
                     [DbName, Reason]);
             {Doc} ->
-<<<<<<< HEAD
                 Shards = mem3_util:build_ordered_shards(DbName, Doc),
+                Config = get_config(Doc),
                 gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Config}),
                 [create_if_missing(mem3:name(S)) || S
                     <- Shards, mem3:node(S) =:= node()]
-=======
-                Shards = mem3_util:build_shards(DbName, Doc),
-                Config = get_config(Doc),
-                gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Config}),
-                [create_if_missing(Name) || #shard{name=Name, node=Node}
-                    <- Shards, Node =:= node()]
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
             end
         end
     end,
     {ok, couch_util:get_value(<<"seq">>, Change)};
-
 changes_callback(timeout, _) ->
     ok.
 
@@ -354,40 +318,23 @@ load_shards_from_disk(DbName) when is_binary(DbName) ->
 load_shards_from_db(#db{} = ShardDb, DbName) ->
     case couch_db:open_doc(ShardDb, DbName, []) of
     {ok, #doc{body = {Props}}} ->
-<<<<<<< HEAD
         Shards = mem3_util:build_ordered_shards(DbName, Props),
         gen_server:cast(?MODULE, {cache_insert, DbName, Shards}),
         Config = get_config(Props),
         gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Config}),
-åå        Shards;
-=======
-        twig:log(notice, "dbs cache miss for ~s", [DbName]),
-        Shards = mem3_util:build_shards(DbName, Props),
-        Config = get_config(Props),
-        gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Config}),
         Shards;
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
     {not_found, _} ->
         erlang:error(database_does_not_exist, ?b2l(DbName))
     end.
 
 load_shards_from_disk(DbName, DocId)->
     Shards = load_shards_from_disk(DbName),
-<<<<<<< HEAD
-<<<<<<< HEAD
     HashKey = mem3_util:hash(DbName, DocId),
     [S || S <- Shards, in_range(S, HashKey)].
 
 in_range(Shard, HashKey) ->
     [B, E] = mem3:range(Shard),
     B =< HashKey andalso HashKey =< E.
-=======
-    {_, HashKey} = mem3_util:hash(DbName, DocId),
->>>>>>> changed hash calculation to return a hash type
-=======
-    {_, HashKey} = mem3_util:hash(DbName, DocId),
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
-    [S || #shard{range = [B,E]} = S <- Shards, B =< HashKey, HashKey =< E].
 
 create_if_missing(Name) ->
     DbDir = config:get("couchdb", "database_dir"),

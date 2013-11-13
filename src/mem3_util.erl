@@ -15,9 +15,8 @@
 -module(mem3_util).
 
 -export([hash/2, name_shard/2, create_partition_map/5, build_shards/2,
-    n_val/2, z_val/3, to_atom/1, to_integer/1, write_db_doc/1, delete_db_doc/1,
+    n_val/2, to_atom/1, to_integer/1, write_db_doc/1, delete_db_doc/1,
     shard_info/1, ensure_exists/1, open_db_doc/1, ringtop/1]).
--export([owner/2]).
 
 %% do not use outside mem3.
 -export([build_ordered_shards/2, downcast/1]).
@@ -154,10 +153,7 @@ ringtop(DbName) ->
       DefaultRingtop
     end.
 
-<<<<<<< HEAD
 -spec build_shards(binary(), list()) -> [#shard{}].
-=======
->>>>>>> fcca0fd563c63fec88b19be14209b3a3257615b9
 build_shards(DbName, DocProps) ->
     build_shards_by_node(DbName, DocProps).
 
@@ -247,7 +243,6 @@ ensure_exists(DbName) ->
     end.
 
 owner(DbName, DocId) ->
-<<<<<<< HEAD
     Nodes = lists:sort([N || #shard{node=N} <- mem3:shards(DbName, DocId)]),
     node() =:= hd(rotate_list({DbName, DocId}, Nodes)).
 
