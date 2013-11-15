@@ -23,7 +23,7 @@
 -export([start_link/0]).
 
 -export([for_db/1, for_db/2, for_docid/2, for_docid/3, get/3, local/1, fold/2]).
--export([set_max_size/1]).
+-export([set_max_size/1, config_for_db/1, for_doc/2]).
 
 -record(st, {
     max_size = 25000,
@@ -96,26 +96,6 @@ for_docid(DbName, DocId, Options) ->
         false -> mem3_util:downcast(Shards)
     end.
 
-for_doc(DbName, Doc) ->
-    {HashType, HashKey} = mem3_util:hash(DbName, Doc),
-    Head = #shard{
-        name = '_',
-        node = '_',
-        dbname = DbName,
-        range = ['$1','$2'],
-        ref = '_'
-    },
-    Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
-    try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
-        [] ->
-            {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}};
-        Shards ->
-            gen_server:cast(?MODULE, {cache_hit, DbName}),
-            {Shards, {HashType, HashKey}}
-    catch error:badarg ->
-        {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
-    end.
-
 get(DbName, Node, Range) ->
     Res = lists:foldl(fun(#shard{node=N, range=R}=S, Acc) ->
         case {N, R} of
@@ -147,6 +127,29 @@ fold(Fun, Acc) ->
 
 set_max_size(Size) when is_integer(Size), Size > 0 ->
     gen_server:call(?MODULE, {set_max_size, Size}).
+
+for_doc(DbName, Doc) ->
+    {HashType, HashKey} = mem3_util:hash(DbName, Doc),
+    Head = #shard{
+        name = '_',
+        node = '_',
+        dbname = DbName,
+        range = ['$1','$2'],
+        ref = '_'
+    },
+    Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
+    try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
+        [] ->
+            {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}};
+        Shards ->
+            gen_server:cast(?MODULE, {cache_hit, DbName}),
+            {Shards, {HashType, HashKey}}
+    catch error:badarg ->
+        {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
+    end.
+
+config_for_db(DbName) ->
+    gen_server:call(?MODULE, {get_config, DbName}).
 
 handle_config_change("mem3", "shard_cache_size", SizeList, _, _) ->
     Size = list_to_integer(SizeList),
