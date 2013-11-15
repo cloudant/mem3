@@ -183,7 +183,7 @@ handle_call({get_config, DbName}, _From, St) ->
     [] ->
         % open up doc directly
         case mem3_util:open_db_doc(DbName) of
-        {ok, {DocProps}} ->
+        {ok, {doc, _,  _, {DocProps}, _, _, _}} ->
             Cfg = get_config(DocProps),
             % cache
             Shards = mem3_util:build_shards(DbName, DocProps), 
