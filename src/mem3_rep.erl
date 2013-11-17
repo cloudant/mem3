@@ -2,6 +2,7 @@
 
 -export([go/2, go/3, changes_enumerator/3, make_local_id/2]).
 -export([
+    find_source_seq/4,
     load_checkpoint/3,
     save_checkpoint/5
 ]).
@@ -24,6 +25,27 @@
     history = [],
     target_uuid
 }).
+
+%% @doc Returns a sequence of the SourceDb guaranteed to be wholly contained in
+%%      the target as of the supplied target sequence.
+find_source_seq(SourceDb, TargetNode, TargetUUID, TargetSeq) ->
+    SourceUUID = couch_db:get_uuid(SourceDb),
+    case couch_db:open_doc(SourceDb, make_local_id(SourceUUID, TargetUUID), []) of
+    {ok, #doc{body = {Props}}} ->
+        UseableHistory = lists:filter(fun(Entry) ->
+            couch_util:get_value(<<"target_node">>, Entry) =:= TargetNode andalso
+            couch_util:get_value(<<"target_uuid">>, Entry) =:= TargetUUID andalso
+            couch_util:get_value(<<"target_seq">>,  Entry) =<  TargetSeq
+        end, couch_util:get_value(<<"history">>, Props, [])),
+        case UseableHistory of
+            [Checkpoint | _] ->
+                couch_util:get_value(<<"source_seq">>, Checkpoint);
+            [] ->
+                0
+        end;
+    {not_found, _} ->
+        0
+    end.
 
 go(Source, Target) ->
     go(Source, Target, []).
