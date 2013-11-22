@@ -14,6 +14,7 @@
 
 -module(mem3_sync_nodes).
 -behaviour(gen_server).
+-vsn(1).
 
 
 -export([start_link/0]).
