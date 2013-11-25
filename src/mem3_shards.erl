@@ -22,7 +22,7 @@
 
 -export([start_link/0]).
 -export([for_db/1, for_db/2, for_docid/2, for_docid/3, get/3, local/1, fold/2]).
--export([set_max_size/1, config_for_db/1, for_doc/3]).
+-export([set_max_size/1, config_for_db/1]).
 
 -record(st, {
     max_size = 25000,
@@ -61,8 +61,9 @@ for_db(DbName, Options) ->
 for_docid(DbName, DocId) ->
     for_docid(DbName, DocId, []).
 
+
 for_docid(DbName, DocId, Options) ->
-    HashKey = mem3_util:hash(DbName, DocId),
+    {_HashKey, HashVal} = mem3_util:hash(DbName, DocId),
     ShardHead = #shard{
         name = '_',
         node = '_',
@@ -78,7 +79,7 @@ for_docid(DbName, DocId, Options) ->
         ref = '_',
         order = '_'
     },
-    Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
+    Conditions = [{'=<', '$1', HashVal}, {'=<', HashVal, '$2'}],
     ShardSpec = {ShardHead, Conditions, ['$_']},
     OrderedShardSpec = {OrderedShardHead, Conditions, ['$_']},
     Shards = try ets:select(?SHARDS, [ShardSpec, OrderedShardSpec]) of
@@ -95,26 +96,6 @@ for_docid(DbName, DocId, Options) ->
         false -> mem3_util:downcast(Shards)
     end.
 
-for_doc(DbName, Doc, _Options) ->
-    {HashType, HashKey} = mem3_util:hash(DbName, Doc),
-    Head = #shard{
-         name = '_',
-         node = '_',
-         dbname = DbName,
-         range = ['$1','$2'],
-         ref = '_'
-     },
-     Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
-     try ets:select(?SHARDS, [{Head, Conditions, ['$_']}]) of
-         [] ->
-             {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}};
-         Shards ->
-             gen_server:cast(?MODULE, {cache_hit, DbName}),
-             {Shards, {HashType, HashKey}}
-     catch error:badarg ->
-         {load_shards_from_disk(DbName, Doc#doc.id), {HashType, HashKey}}
-     end.
- 
  config_for_db(DbName) ->
      gen_server:call(?MODULE, {get_config, DbName}).
  

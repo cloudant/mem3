@@ -29,7 +29,7 @@
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
 
-hash(DbName, Item) when is_binary(Item) ->
+hash(DbName, Item) ->
     {ok, HashFun} = hashfun(DbName),
     hash(DbName, Item, HashFun).
 
@@ -261,7 +261,7 @@ downcast(Shards) when is_list(Shards) ->
     [downcast(Shard) || Shard <- Shards].
 
 ringtop(DbName) ->
-    DefaultRingtop = (2 bsl 31) - 1,
+    DefaultRingtop = (2 bsl 31),
     try
         case mem3_shards:config_for_db(DbName) of 
         {ok, not_found} ->
@@ -269,7 +269,7 @@ ringtop(DbName) ->
         {ok, Config} -> 
             case lists:keyfind(ringtop, 1, Config) of 
             {ringtop, Ringtop} ->
-                Ringtop - 1;
+                Ringtop;
             false ->
                 DefaultRingtop
             end
