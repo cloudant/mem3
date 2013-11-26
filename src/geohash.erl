@@ -42,11 +42,11 @@ mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
   end;
 
 
-mem3_hash(DbName, <<"foo">>) ->
+mem3_hash(_DbName, <<"foo">>) ->
   % do nothing, this is a dummy run to calculate number of shards in database
   {?TYPE, 0};
 
-mem3_hash(DbName, DocId) ->
+mem3_hash(_DbName, DocId) ->
   Id = ?b2l(DocId),
   case string:tokens(Id, "-") of
   [_, Hash] ->

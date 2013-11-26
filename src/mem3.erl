@@ -122,7 +122,7 @@ shards_int(DbName, Doc, Options) when is_record(Doc, doc) ->
     mem3_shards:for_docid(DbName, Doc, Options);
 
 shards_int(DbName, DocId, Options) ->
-    Res = mem3_shards:for_docid(DbName, DocId, Options).
+    mem3_shards:for_docid(DbName, DocId, Options).
 
 -spec ushards(DbName::iodata()) -> [#shard{}].
 ushards(DbName) ->

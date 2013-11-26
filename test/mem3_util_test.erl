@@ -20,8 +20,8 @@
 hash_test() ->
   ?assertEqual(1624516141,mem3_util:hash(undefined, 0)),
   ?assertEqual(3816901808,mem3_util:hash(undefined, "0")),
-  ?assertEqual(3523407757,mem3_util:hash(undefined, <<0>>)),
-  ?assertEqual(4108050209,mem3_util:hash(undefined, <<"0">>)),
+  ?assertEqual({default, 3523407757},mem3_util:hash(undefined, <<0>>)),
+  ?assertEqual({default, 4108050209},mem3_util:hash(undefined, <<"0">>)),
   ?assertEqual(3094724072,mem3_util:hash(undefined, zero)),
   ok.
 
