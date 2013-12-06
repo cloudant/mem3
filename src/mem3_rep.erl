@@ -1,11 +1,23 @@
 -module(mem3_rep).
 
--export([go/2, go/3, changes_enumerator/3, make_local_id/2]).
+
+-export([
+    go/2,
+    go/3,
+    make_local_id/2
+]).
+
+-export([
+    changes_enumerator/3
+]).
+
 
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
 
+
 -define(CTX, #user_ctx{roles = [<<"_admin">>]}).
+
 
 -record(acc, {
     batch_size,
@@ -19,11 +31,14 @@
     filter
 }).
 
+
 go(Source, Target) ->
     go(Source, Target, []).
 
+
 go(DbName, Node, Opts) when is_binary(DbName), is_atom(Node) ->
     go(#shard{name=DbName, node=node()}, #shard{name=DbName, node=Node}, Opts);
+
 
 go(#shard{} = Source, #shard{} = Target, Opts) ->
     mem3_sync_security:maybe_sync(Source, Target),
@@ -48,6 +63,7 @@ go(#shard{} = Source, #shard{} = Target, Opts) ->
     },
     go(Acc).
 
+
 go(#acc{source=Source, batch_count=BC}=Acc) ->
     case couch_db:open(Source#shard.name, [{user_ctx,?CTX}]) of
     {ok, Db} ->
@@ -70,6 +86,7 @@ go(#acc{source=Source, batch_count=BC}=Acc) ->
         {error, missing_source}
     end.
 
+
 repl(#db{name=DbName, seq_tree=Bt}=Db, #acc{localid=LocalId}=Acc0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     Seq = calculate_start_seq(Db, Acc0#acc.target, LocalId),
@@ -79,8 +96,10 @@ repl(#db{name=DbName, seq_tree=Bt}=Db, #acc{localid=LocalId}=Acc0) ->
     {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
     {ok, couch_db:count_changes_since(Db, LastSeq)}.
 
+
 make_local_id(#shard{}=Source, #shard{}=Target) ->
     make_local_id(Source, Target, undefined).
+
 
 make_local_id(#shard{node=SourceNode}, #shard{node=TargetNode}, Filter) ->
     S = couch_util:encodeBase64Url(couch_util:md5(term_to_binary(SourceNode))),
@@ -94,6 +113,7 @@ make_local_id(#shard{node=SourceNode}, #shard{node=TargetNode}, Filter) ->
             <<>>
     end,
     <<"_local/shard-sync-", S/binary, "-", T/binary, F/binary>>.
+
 
 changes_enumerator(FDI, _, #acc{revcount=C, infos=Infos}=Acc0) ->
     #doc_info{
@@ -112,6 +132,7 @@ changes_enumerator(FDI, _, #acc{revcount=C, infos=Infos}=Acc0) ->
     Go = if Count < Acc1#acc.batch_size -> ok; true -> stop end,
     {Go, Acc1}.
 
+
 filter_doc(Filter, FullDocInfo) when is_function(Filter) ->
     try Filter(FullDocInfo) of
         discard -> discard;
@@ -121,6 +142,7 @@ filter_doc(Filter, FullDocInfo) when is_function(Filter) ->
     end;
 filter_doc(_, _) ->
     keep.
+
 
 replicate_batch(#acc{target = #shard{node=Node, name=Name}} = Acc) ->
     case find_missing_revs(Acc) of
@@ -132,6 +154,7 @@ replicate_batch(#acc{target = #shard{node=Node, name=Name}} = Acc) ->
     update_locals(Acc),
     {ok, Acc#acc{revcount=0, infos=[]}}.
 
+
 find_missing_revs(Acc) ->
     #acc{target = #shard{node=Node, name=Name}, infos = Infos} = Acc,
     IdsRevs = lists:map(fun(FDI) ->
@@ -141,17 +164,20 @@ find_missing_revs(Acc) ->
     Options = [{io_priority, {internal_repl, Name}}, {user_ctx, ?CTX}],
     rexi_call(Node, {fabric_rpc, get_missing_revs, [Name, IdsRevs, Options]}).
 
+
 open_docs(#acc{source=Source, infos=Infos}, Missing) ->
     lists:flatmap(fun({Id, Revs, _}) ->
         FDI = lists:keyfind(Id, #full_doc_info.id, Infos),
         open_doc_revs(Source, FDI, Revs)
     end, Missing).
 
+
 save_on_target(Node, Name, Docs) ->
     Options = [replicated_changes, full_commit, {user_ctx, ?CTX},
         {io_priority, {internal_repl, Name}}],
     rexi_call(Node, {fabric_rpc, update_docs, [Name, Docs, Options]}),
     ok.
+
 
 update_locals(Acc) ->
     #acc{seq=Seq, source=Db, target=Target, localid=Id} = Acc,
@@ -164,6 +190,7 @@ update_locals(Acc) ->
     {ok, _} = couch_db:update_doc(Db, Doc, []),
     Options = [{user_ctx, ?CTX}, {io_priority, {internal_repl, Name}}],
     rexi_call(Node, {fabric_rpc, update_docs, [Name, [Doc], Options]}).
+
 
 rexi_call(Node, MFA) ->
     Mon = rexi_monitor:start([rexi_utils:server_pid(Node)]),
@@ -182,6 +209,7 @@ rexi_call(Node, MFA) ->
         rexi_monitor:stop(Mon)
     end.
 
+
 calculate_start_seq(Db, #shard{node=Node, name=Name}, LocalId) ->
     case couch_db:open_doc(Db, LocalId, []) of
     {ok, #doc{body = {SProps}}} ->
@@ -198,11 +226,13 @@ calculate_start_seq(Db, #shard{node=Node, name=Name}, LocalId) ->
         0
     end.
 
+
 open_doc_revs(Db, #full_doc_info{id=Id, rev_tree=RevTree}, Revs) ->
     {FoundRevs, _} = couch_key_tree:get_key_leafs(RevTree, Revs),
     lists:map(fun({#leaf{deleted=IsDel, ptr=SummaryPtr}, FoundRevPath}) ->
                   couch_db:make_doc(Db, Id, IsDel, SummaryPtr, FoundRevPath)
     end, FoundRevs).
+
 
 iso8601_timestamp() ->
     {_,_,Micro} = Now = os:timestamp(),
