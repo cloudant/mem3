@@ -35,14 +35,30 @@
 
 -include("mem3.hrl").
 
+-record (gacc, {
+    donors,
+    targets,
+    moves,
+    limit,
+    target_level
+}).
+
 %% @equiv expand(1000)
 -spec expand() -> [{atom(), #shard{}, node()}].
 expand() ->
     expand(1000).
 
+%% @doc Expands a cluster without requiring each DB to be optimally balanced.
+-spec expand(integer() | global) -> [{atom(), #shard{}, node()}].
+expand(global) ->
+    {ok, FD} = file:open("/tmp/rebalance_plan.txt", [write]),
+    erlang:put(fd, FD),
+    global_expand(surviving_nodes(), [], 1000);
+
 %% @doc Expands all databases in the cluster, stopping at Limit operations.
--spec expand(integer()) -> [{atom(), #shard{}, node()}].
 expand(Limit) when is_integer(Limit), Limit > 0 ->
+    {ok, FD} = file:open("/tmp/rebalance_plan.txt", [write]),
+    erlang:put(fd, FD),
     TargetNodes = surviving_nodes(),
     LocalBalanceFun = fun(Db, Moves) -> expand(Db, TargetNodes, Moves) end,
     LocalBalanceOps = apply_to_cluster(LocalBalanceFun, Limit),
@@ -73,6 +89,8 @@ contract() ->
 %% @doc Computes a plan to remove up to Limit shards from nodes in "decom" zone.
 -spec contract(integer()) -> [{atom(), #shard{}, node()}].
 contract(Limit) when is_integer(Limit), Limit > 0 ->
+    {ok, FD} = file:open("/tmp/rebalance_plan.txt", [write]),
+    erlang:put(fd, FD),
     TargetNodes = surviving_nodes(),
     apply_to_cluster(fun(Db, Moves) -> contract(Db, TargetNodes, Moves) end, Limit);
 
@@ -99,6 +117,8 @@ fix_zoning() ->
 %%      levels and improper zoning.
 -spec fix_zoning(integer()) -> [{atom(), #shard{}, node()}].
 fix_zoning(Limit) when is_integer(Limit), Limit > 0 ->
+    {ok, FD} = file:open("/tmp/rebalance_plan.txt", [write]),
+    erlang:put(fd, FD),
     apply_to_cluster(fun fix_zoning/2, Limit);
 
 fix_zoning(DbName) when is_binary(DbName); is_list(DbName) ->
@@ -123,63 +143,106 @@ global_expand(TargetNodes0, LocalOps, Limit) ->
         lists:member(Node, TargetNodes)
     end, shard_count_by_node(LocalOps)),
     TotalCount = lists:foldl(fun({_, C}, Sum) -> Sum + C end, 0, CountByNode),
-    TargetLevel = (TotalCount div length(TargetNodes)) + 1,
-    FoldFun = fun
-        (_, Acc) when length(Acc) >= Limit ->
-            % We've already accumulated the max number of shard ops.
-            Acc;
-        ({_Node, Count}, Acc) when Count =< TargetLevel ->
-            % This node is not a donor.
-            Acc;
-        ({Node0, Count}, Acc) ->
-            Node = list_to_existing_atom(binary_to_list(Node0)),
-            % Compute the max number of shards to donate.
-            DC0 = erlang:max(Count - TargetLevel, Limit - length(Acc)),
-            InternalAcc0 = {Node, TargetNodes, Acc, DC0},
-            try mem3_shards:fold(fun donate_fold/2, InternalAcc0) of
-                {_, _, Moves, _} ->
-                    Moves
-            catch
-                {complete, Moves} ->
-                    Moves
-            end
-    end,
-    lists:foldl(FoldFun, LocalOps, CountByNode).
+    TargetLevel = TotalCount div length(TargetNodes),
+    Donors = [{list_to_existing_atom(binary_to_list(N)), C - TargetLevel} ||
+        {N, C} <- CountByNode, C > TargetLevel],
+    InternalAcc0 = #gacc{
+        donors = orddict:from_list(Donors),
+        targets = TargetNodes0,
+        moves = LocalOps,
+        limit = Limit - length(LocalOps),
+        target_level = TargetLevel
+    },
+    try mem3_shards:fold(fun donate_fold/2, InternalAcc0) of
+        #gacc{moves = Moves} ->
+            Moves
+    catch
+        {complete, Moves} ->
+            Moves
+    end.
 
-donate_fold(_Shard, {_, _, Moves, 0}) ->
+donate_fold(_Shard, #gacc{limit = 0, moves = Moves}) ->
     throw({complete, Moves});
-donate_fold(#shard{node = Node} = Shard, {Node, Nodes, Moves, DC}) ->
+donate_fold(#shard{node = Node} = Shard, Acc0) ->
+     #gacc{
+        donors = Donors,
+        targets = Nodes,
+        moves = Moves,
+        limit = DC,
+        target_level = TargetLevel
+    } = Acc0,
     Zone = mem3:node_info(Node, <<"zone">>),
     Shards = apply_shard_moves(mem3:shards(Shard#shard.dbname), Moves),
     InZone = filter_map_by_zone(shards_by_node(Shards, Nodes), Zone),
     SortedByCount = lists:sort(smallest_first(Moves), InZone),
-    Candidates = lists:dropwhile(fun({_Node, OwnShards}) ->
-        lists:keymember(Shard#shard.range, #shard.range, OwnShards)
-    end, SortedByCount),
-    case {lists:member(Shard, Shards), Candidates} of
-        {false, _} ->
-            {Node, Nodes, Moves, DC};
-        {true, []} ->
-            {Node, Nodes, Moves, DC};
-        {true, [{Node, _} | _]} ->
-            {Node, Nodes, Moves, DC};
-        {true, [{Target, _} | _]} ->
-            % Execute the move only if the target has fewer shards for this DB
-            % than the source. Otherwise we'd generate a local imbalance.
-            SourceCount = get_shard_count(Node, SortedByCount),
-            TargetCount = get_shard_count(Target, SortedByCount),
-            if TargetCount < SourceCount ->
-                print({move, Shard, Target}),
-                {Node, Nodes, [{move, Shard, Target} | Moves], DC - 1};
+    SourceCount = get_shard_count(Node, SortedByCount),
+    GlobalShardCounts = shard_count_by_node(Moves),
+    TotalSource = get_global_shard_count(Node, GlobalShardCounts),
+    Fun = fun({CandidateNode, OwnShards}) ->
+        HasRange = lists:keymember(Shard#shard.range, #shard.range, OwnShards),
+        TargetCount = get_shard_count(CandidateNode, SortedByCount),
+        TotalTarget = get_global_shard_count(CandidateNode, GlobalShardCounts),
+        if
+            CandidateNode =:= Node ->
+                % Can't move a shard to ourselves
+                true;
+            HasRange ->
+                % The candidate already has this shard
+                true;
+            TargetCount >= SourceCount ->
+                % Executing this move would create a local imbalance in the DB
+                true;
+            TotalTarget > TargetLevel ->
+                % The candidate has already exceeded the target level
+                true;
+            (TotalSource - TotalTarget) < 2 ->
+                % Donating here is wasted work
+                true;
             true ->
-                {Node, Nodes, Moves, DC}
-            end
+                false
+        end
+    end,
+    case {lists:member(Shard, Shards), lists:keymember(Node, 1, Donors)} of
+        {true, true} ->
+            case lists:dropwhile(Fun, SortedByCount) of
+                [{Target, _} | _] ->
+                    NewMoves = [{move, Shard, Target} | Moves],
+                    print({move, Shard, Target}),
+                    Acc0#gacc{
+                        moves = NewMoves,
+                        limit = DC - 1,
+                        donors = update_donors(Node, Donors, NewMoves)
+                    };
+                [] ->
+                    Acc0
+            end;
+        _ ->
+            Acc0
     end;
 donate_fold(_Shard, Acc) ->
     Acc.
 
+update_donors(Node, Donors, Moves) ->
+    NewDonors = case orddict:fetch(Node, Donors) of
+        1 ->
+            orddict:erase(Node, Donors);
+        X ->
+            orddict:store(Node, X-1, Donors)
+    end,
+    case orddict:size(NewDonors) of
+        0 ->
+            throw({complete, Moves});
+        _ ->
+            NewDonors
+    end.
+
 get_shard_count(AtomKey, ShardsByNode) when is_atom(AtomKey) ->
     length(couch_util:get_value(AtomKey, ShardsByNode, [])).
+
+get_global_shard_count(Node, Counts) when is_atom(Node) ->
+    get_global_shard_count(couch_util:to_binary(Node), Counts);
+get_global_shard_count(Node, Counts) when is_binary(Node) ->
+    couch_util:get_value(Node, Counts, 0).
 
 compute_moves(IdealZoning, IdealZoning, _Copies, OtherMoves) ->
     OtherMoves;
@@ -295,8 +358,8 @@ smallest_first(PrevMoves) ->
     fun(A, B) -> sort_by_count(A, B, Global) =< 0 end.
 
 sort_by_count({NodeA, SA}, {NodeB, SB}, Global) when length(SA) =:= length(SB) ->
-    CountA = couch_util:get_value(couch_util:to_binary(NodeA), Global, 0),
-    CountB = couch_util:get_value(couch_util:to_binary(NodeB), Global, 0),
+    CountA = get_global_shard_count(NodeA, Global),
+    CountB = get_global_shard_count(NodeB, Global),
     cmp(CountA, CountB);
 sort_by_count({_, A}, {_, B}, _) ->
     cmp(length(A), length(B)).
@@ -426,12 +489,18 @@ print({Op, Shard, TargetNode} = Operation) ->
     ),
     {match, [Range, Account, DbName]} = re:run(
         Shard#shard.name,
-        "shards/(?<range>[0-9a-f\-]+)/(?<account>.+)/(?<dbname>[a-z][a-z0-9\\_\\$()\\+\\-\\/]+)\.[0-9]{8}",
+        "shards/(?<range>[0-9a-f\-]+)/(?<account>.+)/(?<dbname>[a-z\\_][a-z0-9\\_\\$()\\+\\-\\/]+)\.[0-9]{8}",
         [{capture, all_but_first, binary}]
     ),
     OpName = case Op of move -> move2; _ -> Op end,
-    io:format("clou shard ~s ~s ~s ~s ~s ~s ~s~n", [OpName, Cluster, Account, DbName,
-         Range, SourceId, TargetId]),
+    case get(fd) of
+        undefined ->
+            io:format("clou shard ~s ~s ~s ~s ~s ~s ~s~n", [OpName,
+                 Cluster, Account, DbName, Range, SourceId, TargetId]);
+        FD ->
+            io:format(FD, "clou shard ~s ~s ~s ~s ~s ~s ~s~n", [OpName,
+                 Cluster, Account, DbName, Range, SourceId, TargetId])
+    end,
     Operation;
 
 print(Operations) when is_list(Operations) ->
