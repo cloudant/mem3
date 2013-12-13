@@ -108,19 +108,18 @@ get_xycenter({Doc}) ->
     {(MinX + MaxX) / 2, (MinY + MaxY) / 2};
   _ ->
     % process other simple geometry types
-    case lists:keyfind(<<"geometry">>, 1, Doc) of 
-      {_, {[{<<"type">>, GeomType}, {<<"coordinates">>, Coords}]}} ->
-        get_xycenter(GeomType, Coords);
+    case lists:keyfind(<<"geometry">>, 1, Doc) of
+      {_, {[{<<"type">>, _GeomType}, {<<"coordinates">>, _Coords}]} = Geom} ->
+        case erl_spatial:get_centre(Geom) of
+          {ok, {X, Y}} ->
+            {X, Y};
+          _ ->
+            null
+        end;
       _ ->
         null
     end
   end.
-
-get_xycenter(<<"Point">>, [X, Y]) ->
-  {X, Y};
-
-get_xycenter(_, _) ->
-  null.
 
 format_geohash(<<>>, Acc, _Precision) ->
   lists:flatten(lists:reverse(Acc));
