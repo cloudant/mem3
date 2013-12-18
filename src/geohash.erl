@@ -109,6 +109,10 @@ get_xycenter({Doc}) ->
   _ ->
     % process other simple geometry types
     case lists:keyfind(<<"geometry">>, 1, Doc) of
+      {_, {[{<<"type">>, _GeomType}, {<<"bbox">>, [MinX, MinY, MaxX, MaxY]} | _ ]}} ->
+        {(MinX + MaxX) / 2, (MinY + MaxY) / 2};
+      {_, {[{<<"type">>, <<"point">>}, {<<"coordinates">>, [X, Y]}]}} ->
+        {X, Y};
       {_, {[{<<"type">>, _GeomType}, {<<"coordinates">>, _Coords}]} = Geom} ->
         case erl_spatial:get_centre(Geom) of
           {ok, {X, Y}} ->
