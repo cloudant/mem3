@@ -492,13 +492,12 @@ print({Op, Shard, TargetNode} = Operation) ->
         "shards/(?<range>[0-9a-f\-]+)/((heroku|cloudbees|appharbor|cloudcontrol)/)?(?<account>[a-z0-9-]+)/(?<dbname>[a-z\\_][a-z0-9\\_\\$()\\+\\-\\/]*)\.[0-9]{8}",
         [{capture, all_but_first, binary}]
     ),
-    OpName = case Op of move -> move2; _ -> Op end,
     case get(fd) of
         undefined ->
-            io:format("clou shard ~s ~s ~s~s ~s ~s ~s ~s~n", [OpName,
+            io:format("clou shard ~s ~s ~s~s ~s ~s ~s ~s~n", [Op,
                  Cluster, Provider, Account, DbName, Range, SourceId, TargetId]);
         FD ->
-            io:format(FD, "clou shard ~s ~s ~s~s ~s ~s ~s ~s~n", [OpName,
+            io:format(FD, "clou shard ~s ~s ~s~s ~s ~s ~s ~s~n", [Op,
                  Cluster, Provider, Account, DbName, Range, SourceId, TargetId])
     end,
     Operation;
