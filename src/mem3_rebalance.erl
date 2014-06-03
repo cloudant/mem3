@@ -489,7 +489,7 @@ print({Op, Shard, TargetNode} = Operation) ->
     ),
     {match, [Range, Provider, _, Account, DbName]} = re:run(
         Shard#shard.name,
-        "shards/(?<range>[0-9a-f\-]+)/((heroku|cloudbees|appharbor|cloudcontrol)/)?(?<account>[a-z0-9-]+)/(?<dbname>[a-z\\_][a-z0-9\\_\\$()\\+\\-\\/]+)\.[0-9]{8}",
+        "shards/(?<range>[0-9a-f\-]+)/((heroku|cloudbees|appharbor|cloudcontrol)/)?(?<account>[a-z0-9-]+)/(?<dbname>[a-z\\_][a-z0-9\\_\\$()\\+\\-\\/]*)\.[0-9]{8}",
         [{capture, all_but_first, binary}]
     ),
     OpName = case Op of move -> move2; _ -> Op end,
