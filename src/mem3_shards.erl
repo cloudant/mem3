@@ -23,7 +23,7 @@
 
 -export([start_link/0]).
 -export([for_db/1, for_db/2, for_docid/2, for_docid/3, get/3, local/1, fold/2]).
--export([set_max_size/1]).
+-export([set_max_size/1, config_for_db/1]).
 
 -record(st, {
     max_size = 25000,
@@ -62,8 +62,9 @@ for_db(DbName, Options) ->
 for_docid(DbName, DocId) ->
     for_docid(DbName, DocId, []).
 
+
 for_docid(DbName, DocId, Options) ->
-    HashKey = mem3_util:hash(DocId),
+    {_HashKey, HashVal} = mem3_util:hash(DbName, DocId),
     ShardHead = #shard{
         name = '_',
         node = '_',
@@ -79,7 +80,7 @@ for_docid(DbName, DocId, Options) ->
         ref = '_',
         order = '_'
     },
-    Conditions = [{'=<', '$1', HashKey}, {'=<', HashKey, '$2'}],
+    Conditions = [{'=<', '$1', HashVal}, {'=<', HashVal, '$2'}],
     ShardSpec = {ShardHead, Conditions, ['$_']},
     OrderedShardSpec = {OrderedShardHead, Conditions, ['$_']},
     Shards = try ets:select(?SHARDS, [ShardSpec, OrderedShardSpec]) of
@@ -96,6 +97,9 @@ for_docid(DbName, DocId, Options) ->
         false -> mem3_util:downcast(Shards)
     end.
 
+ config_for_db(DbName) ->
+     gen_server:call(?MODULE, {get_config, DbName}).
+ 
 get(DbName, Node, Range) ->
     Res = lists:foldl(fun(#shard{node=N, range=R}=S, Acc) ->
         case {N, R} of
@@ -156,6 +160,26 @@ handle_call({set_max_size, Size}, _From, St) ->
 handle_call(shard_db_changed, _From, St) ->
     exit(St#st.changes_pid, shard_db_changed),
     {reply, ok, St};
+handle_call({get_config, DbName}, _From, St) ->
+    Config = case ets:lookup(?DBS, DbName) of
+    [] ->
+        % open up doc directly
+        case mem3_util:open_db_doc(DbName) of
+        {ok, {doc, _,  _, {DocProps}, _, _, _}} ->
+            Cfg = get_config(DocProps),
+            % cache
+            Shards = mem3_util:build_shards(DbName, DocProps), 
+            gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Cfg}),
+            Cfg;
+        {not_found, _} ->
+            not_found
+        end;
+    [{DbName, _ATime, Cfg}] ->
+        gen_server:cast(?MODULE, {cache_hit, DbName}),
+        Cfg
+    end,
+    {reply, {ok, Config}, St};
+
 handle_call(_Call, _From, St) ->
     {noreply, St}.
 
@@ -163,9 +187,9 @@ handle_cast({cache_hit, DbName}, St) ->
     margaret_counter:increment([dbcore, mem3, shard_cache, hit]),
     cache_hit(DbName),
     {noreply, St};
-handle_cast({cache_insert, DbName, Shards}, St) ->
+handle_cast({cache_insert, DbName, Shards, Config}, St) ->
     margaret_counter:increment([dbcore, mem3, shard_cache, miss]),
-    {noreply, cache_free(cache_insert(St, DbName, Shards))};
+    {noreply, cache_free(cache_insert(St, DbName, Shards, Config))};
 handle_cast({cache_remove, DbName}, St) ->
     margaret_counter:increment([dbcore, mem3, shard_cache, eviction]),
     {noreply, cache_remove(St, DbName)};
@@ -254,7 +278,8 @@ changes_callback({change, {Change}, _}, _) ->
                     [DbName, Reason]);
             {Doc} ->
                 Shards = mem3_util:build_ordered_shards(DbName, Doc),
-                gen_server:cast(?MODULE, {cache_insert, DbName, Shards}),
+                Config = get_config(Doc),
+                gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Config}),
                 [create_if_missing(mem3:name(S)) || S
                     <- Shards, mem3:node(S) =:= node()]
             end
@@ -277,7 +302,8 @@ load_shards_from_db(#db{} = ShardDb, DbName) ->
     case couch_db:open_doc(ShardDb, DbName, []) of
     {ok, #doc{body = {Props}}} ->
         Shards = mem3_util:build_ordered_shards(DbName, Props),
-        gen_server:cast(?MODULE, {cache_insert, DbName, Shards}),
+        Config = get_config(Props),
+        gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Config}),
         Shards;
     {not_found, _} ->
         erlang:error(database_does_not_exist, ?b2l(DbName))
@@ -285,7 +311,7 @@ load_shards_from_db(#db{} = ShardDb, DbName) ->
 
 load_shards_from_disk(DbName, DocId)->
     Shards = load_shards_from_disk(DbName),
-    HashKey = mem3_util:hash(DocId),
+    HashKey = mem3_util:hash(DbName, DocId),
     [S || S <- Shards, in_range(S, HashKey)].
 
 in_range(Shard, HashKey) ->
@@ -309,26 +335,26 @@ create_if_missing(Name) ->
         end
     end.
 
-cache_insert(#st{cur_size=Cur}=St, DbName, Shards) ->
+cache_insert(#st{cur_size=Cur}=St, DbName, Shards, Config) ->
     NewATime = now(),
     true = ets:delete(?SHARDS, DbName),
     true = ets:insert(?SHARDS, Shards),
     case ets:lookup(?DBS, DbName) of
-        [{DbName, ATime}] ->
+        [{DbName, ATime, _Config}] ->
             true = ets:delete(?ATIMES, ATime),
             true = ets:insert(?ATIMES, {NewATime, DbName}),
-            true = ets:insert(?DBS, {DbName, NewATime}),
+            true = ets:insert(?DBS, {DbName, NewATime, Config}),
             St;
         [] ->
             true = ets:insert(?ATIMES, {NewATime, DbName}),
-            true = ets:insert(?DBS, {DbName, NewATime}),
+            true = ets:insert(?DBS, {DbName, NewATime, Config}),
             St#st{cur_size=Cur + 1}
     end.
 
 cache_remove(#st{cur_size=Cur}=St, DbName) ->
     true = ets:delete(?SHARDS, DbName),
     case ets:lookup(?DBS, DbName) of
-        [{DbName, ATime}] ->
+        [{DbName, ATime, _Config}] ->
             true = ets:delete(?DBS, DbName),
             true = ets:delete(?ATIMES, ATime),
             St#st{cur_size=Cur-1};
@@ -338,11 +364,11 @@ cache_remove(#st{cur_size=Cur}=St, DbName) ->
 
 cache_hit(DbName) ->
     case ets:lookup(?DBS, DbName) of
-        [{DbName, ATime}] ->
+        [{DbName, ATime, Config}] ->
             NewATime = now(),
             true = ets:delete(?ATIMES, ATime),
             true = ets:insert(?ATIMES, {NewATime, DbName}),
-            true = ets:insert(?DBS, {DbName, NewATime});
+            true = ets:insert(?DBS, {DbName, NewATime, Config});
         [] ->
             ok
     end.
@@ -362,3 +388,15 @@ cache_clear(St) ->
     true = ets:delete_all_objects(?SHARDS),
     true = ets:delete_all_objects(?ATIMES),
     St#st{cur_size=0}.
+
+get_config(Props) ->
+    {Ringtop, HashFun} = try 
+        Top = couch_util:get_nested_json_value({Props}, [<<"hash_info">>, <<"ring_top">>]),
+        [M, F] = string:tokens(
+            ?b2l(couch_util:get_nested_json_value({Props}, [<<"hash_info">>, <<"hash_fun">>])), ":"),
+        {Top, {M, F}}
+     catch
+     _:_ ->
+         {2 bsl 31, {"crc32hash", "mem3_hash"}}
+     end,
+     [{ringtop, Ringtop}, {hash_fun, HashFun}].

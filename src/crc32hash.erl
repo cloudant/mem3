@@ -1,4 +1,4 @@
-% Copyright 2011 Cloudant
+% Copyright 2012 Cloudant
 %
 % Licensed under the Apache License, Version 2.0 (the "License"); you may not
 % use this file except in compliance with the License. You may obtain a copy of
@@ -12,8 +12,18 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
-{deps, [
-    {twig, ".*", {git, "https://github.com/cloudant/twig.git", {tag, "0.2.1"}}},
-    {erl_spatial, ".*", {git, "git@github.com:cloudant/erl_spatial",
-                                                {tag, "1.0.4"}}}
-]}.
+-module(crc32hash).
+-behaviour(mem3_hash).
+
+-export([mem3_hash/2]).
+
+-include_lib("couch/include/couch_db.hrl").
+
+mem3_hash(DbName, Doc) when is_record(Doc, doc) ->
+  mem3_hash(DbName, Doc#doc.id); 
+
+mem3_hash(_DbName, DocId) when is_binary(DocId) ->
+  {default, erlang:crc32(DocId)};
+
+mem3_hash(_DbName, DocId) ->
+  erlang:crc32(term_to_binary((DocId))).

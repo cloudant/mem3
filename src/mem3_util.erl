@@ -14,9 +14,9 @@
 
 -module(mem3_util).
 
--export([hash/1, name_shard/2, create_partition_map/5, build_shards/2,
+-export([hash/2, name_shard/2, create_partition_map/5, build_shards/2,
     n_val/2, to_atom/1, to_integer/1, write_db_doc/1, delete_db_doc/1,
-    shard_info/1, ensure_exists/1, open_db_doc/1]).
+    shard_info/1, ensure_exists/1, open_db_doc/1, ringtop/1]).
 -export([owner/2, is_deleted/1, rotate_list/2]).
 
 %% do not use outside mem3.
@@ -26,15 +26,15 @@
 -deprecated({create_partition_map, 4, eventually}).
 -deprecated({name_shard, 1, eventually}).
 
--define(RINGTOP, 2 bsl 31).  % CRC32 space
-
 -include("mem3.hrl").
 -include_lib("couch/include/couch_db.hrl").
 
-hash(Item) when is_binary(Item) ->
-    erlang:crc32(Item);
-hash(Item) ->
-    erlang:crc32(term_to_binary(Item)).
+hash(DbName, Item) ->
+    {ok, HashFun} = hashfun(DbName),
+    hash(DbName, Item, HashFun).
+
+hash(DbName, Item, {M, F}) ->
+    apply(list_to_atom(M), list_to_atom(F), [DbName, Item]).
 
 name_shard(Shard) ->
     name_shard(Shard, "").
@@ -55,21 +55,22 @@ create_partition_map(DbName, N, Q, Nodes) ->
     create_partition_map(DbName, N, Q, Nodes, "").
 
 create_partition_map(DbName, N, Q, Nodes, Suffix) ->
-    UniqueShards = make_key_ranges((?RINGTOP) div Q, 0, []),
+    Ringtop = ringtop(DbName),
+    UniqueShards = make_key_ranges((Ringtop) div Q, 0, [], Ringtop),
     Shards0 = lists:flatten([lists:duplicate(N, S) || S <- UniqueShards]),
     Shards1 = attach_nodes(Shards0, [], Nodes, []),
     [name_shard(S#shard{dbname=DbName}, Suffix) || S <- Shards1].
 
-make_key_ranges(_, CurrentPos, Acc) when CurrentPos >= ?RINGTOP ->
+make_key_ranges(_, CurrentPos, Acc, Ringtop) when CurrentPos >= Ringtop ->
     Acc;
-make_key_ranges(Increment, Start, Acc) ->
+make_key_ranges(Increment, Start, Acc, Ringtop) ->
     case Start + 2*Increment of
-    X when X > ?RINGTOP ->
-        End = ?RINGTOP - 1;
+    X when X > Ringtop ->
+        End = Ringtop - 1;
     _ ->
         End = Start + Increment - 1
     end,
-    make_key_ranges(Increment, End+1, [#shard{range=[Start, End]} | Acc]).
+    make_key_ranges(Increment, End+1, [#shard{range=[Start, End]} | Acc], Ringtop).
 
 attach_nodes([], Acc, _, _) ->
     lists:reverse(Acc);
@@ -258,3 +259,37 @@ downcast(#ordered_shard{}=S) ->
       };
 downcast(Shards) when is_list(Shards) ->
     [downcast(Shard) || Shard <- Shards].
+
+ringtop(DbName) ->
+    DefaultRingtop = (2 bsl 31),
+    try
+        case mem3_shards:config_for_db(DbName) of 
+        {ok, not_found} ->
+            DefaultRingtop;
+        {ok, Config} -> 
+            case lists:keyfind(ringtop, 1, Config) of 
+            {ringtop, Ringtop} ->
+                Ringtop;
+            false ->
+                DefaultRingtop
+            end
+         end
+    catch _:_ ->
+        DefaultRingtop
+    end.
+
+hashfun(undefined) ->
+    {ok, {"crc32hash", "mem3_hash"}};
+
+hashfun(DbName) ->
+    case mem3_shards:config_for_db(DbName) of 
+    {ok, not_found} ->
+        {ok, {"crc32hash", "mem3_hash"}};
+    {ok, Config} -> 
+        case lists:keyfind(hash_fun, 1, Config) of 
+        {hash_fun, HashFun} ->
+            {ok, HashFun};
+        false ->
+            {ok, {"crc32hash", "mem3_hash"}}
+        end
+    end.

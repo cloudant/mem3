@@ -1,4 +1,4 @@
-% Copyright 2011 Cloudant
+% Copyright 2012 Cloudant
 %
 % Licensed under the Apache License, Version 2.0 (the "License"); you may not
 % use this file except in compliance with the License. You may obtain a copy of
@@ -12,8 +12,12 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
-{deps, [
-    {twig, ".*", {git, "https://github.com/cloudant/twig.git", {tag, "0.2.1"}}},
-    {erl_spatial, ".*", {git, "git@github.com:cloudant/erl_spatial",
-                                                {tag, "1.0.4"}}}
-]}.
+-module(mem3_hash).
+
+-export([behaviour_info/1]).
+
+behaviour_info(callbacks) ->
+    [{mem3_hash,2}];
+
+behaviour_info(_Other) ->
+    undefined.

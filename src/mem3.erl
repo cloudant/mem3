@@ -96,7 +96,7 @@ shards_int(DbName, Options) ->
             node = node(),
             name = ShardDbName,
             dbname = ShardDbName,
-            range = [0, (2 bsl 31)-1],
+            range = [0,  mem3_util:ringtop(DbName)-1],
             order = undefined}];
     ShardDbName ->
         %% shard_db is treated as a single sharded db to support calls to db_info
@@ -105,7 +105,7 @@ shards_int(DbName, Options) ->
             node = node(),
             name = ShardDbName,
             dbname = ShardDbName,
-            range = [0, (2 bsl 31)-1]}];
+            range = [0, mem3_util:ringtop(DbName)-1]}];
     _ ->
         mem3_shards:for_db(DbName, Options)
     end.
@@ -118,9 +118,11 @@ shards_int(DbName, DocId, Options) when is_list(DbName) ->
     shards_int(list_to_binary(DbName), DocId, Options);
 shards_int(DbName, DocId, Options) when is_list(DocId) ->
     shards_int(DbName, list_to_binary(DocId), Options);
+shards_int(DbName, Doc, Options) when is_record(Doc, doc) ->
+    mem3_shards:for_docid(DbName, Doc, Options);
+
 shards_int(DbName, DocId, Options) ->
     mem3_shards:for_docid(DbName, DocId, Options).
-
 
 -spec ushards(DbName::iodata()) -> [#shard{}].
 ushards(DbName) ->
