@@ -262,8 +262,16 @@ find_donor_and_recipient(IdealZoning, ActualZoning) ->
         end
     end, {nil, nil}, IdealZoning).
 
-pair_up(_, nil, _Copies, Moves) ->
+pair_up(nil, nil, _Copies, Moves) ->
     Moves;
+pair_up(_, nil, Copies, Moves) ->
+    Allowed = surviving_nodes(),
+    % Prefer taking shards from nodes that aren't in surviving_nodes()}])
+    Sorted = lists:sort([{lists:member(S#shard.node, Allowed), S} || S <- Copies]),
+    {_, Candidate} = hd(Sorted),
+    % Dummy 3rd argument, not used by clou
+    print({remove, Candidate, Candidate#shard.node}),
+    [{remove, Candidate}|Moves];
 pair_up(nil, Recipient, Copies, Moves) ->
     % We've got an insufficient replica level -- a recipient but no donor
     Candidate = hd(Copies),
