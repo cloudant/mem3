@@ -476,30 +476,46 @@ shard_count_view() ->
     erlang:demonitor(Ref),
     Map.
 
+get_node_and_host(NodeName) ->
+    re:run(
+        atom_to_list(NodeName),
+        "(?<node>[a-zA-Z0-9]+)@(?<host>[0-9]+\.[a-z0-9]+\..*)",
+        [{capture, all_but_first, binary}]
+    ).
+
+get_id_and_cluster(NodeName) ->
+    re:run(
+        atom_to_list(NodeName),
+        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9]+)\.cloudant.net",
+        [{capture, all_but_first, binary}]
+    ).
+
 print({Op, Shard, TargetNode} = Operation) ->
-    {match, [SourceId, Cluster]} = re:run(
-        atom_to_list(Shard#shard.node),
-        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9]+)\.cloudant.net",
-        [{capture, all_but_first, binary}]
-    ),
-    {match, [TargetId, Cluster]} = re:run(
-        atom_to_list(TargetNode),
-        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9]+)\.cloudant.net",
-        [{capture, all_but_first, binary}]
-    ),
-    {match, [Range, Account, DbName]} = re:run(
+    {match, [SourceId, Cluster]} = case get_id_and_cluster(Shard#shard.node) of
+        {match, _}=Match ->
+            Match;
+        _ ->
+            get_node_and_host(Shard#shard.node)
+    end,
+    {match, [TargetId, Cluster]} = case get_id_and_cluster(TargetNode) of
+        {match, _}=Match1 ->
+            Match1;
+        _ ->
+            get_node_and_host(TargetNode)
+    end,
+    {match, [Range, DbName]} = re:run(
         Shard#shard.name,
-        "shards/(?<range>[0-9a-f\-]+)/(?<account>.+)/(?<dbname>[a-z\\_][a-z0-9\\_\\$()\\+\\-\\/]+)\.[0-9]{8}",
+        "shards/(?<range>[0-9a-f\-]+)/(?<dbname>[a-z\\_][a-z0-9\\_\\$()\\+\\-\\/]+)\.[0-9]{8}",
         [{capture, all_but_first, binary}]
     ),
     OpName = case Op of move -> move2; _ -> Op end,
     case get(fd) of
         undefined ->
-            io:format("clou shard ~s ~s ~s ~s ~s ~s ~s~n", [OpName,
-                 Cluster, Account, DbName, Range, SourceId, TargetId]);
+            io:format("clou shard ~s ~s ~s ~s ~s ~s~n", [OpName,
+                 Cluster, DbName, Range, SourceId, TargetId]);
         FD ->
-            io:format(FD, "clou shard ~s ~s ~s ~s ~s ~s ~s~n", [OpName,
-                 Cluster, Account, DbName, Range, SourceId, TargetId])
+            io:format(FD, "clou shard ~s ~s ~s ~s ~s ~s~n", [OpName,
+                 Cluster, DbName, Range, SourceId, TargetId])
     end,
     Operation;
 
