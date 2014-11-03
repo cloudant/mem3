@@ -221,9 +221,13 @@ ensure_exists(DbName) ->
     {ok, Db} ->
         {ok, Db};
     _ ->
-        couch_server:create(DbName, Options)
+        case couch_server:create(DbName, Options) of
+        {ok, Db} ->
+            {ok, Db};
+        file_exists -> % harmless race
+            {ok, Db} = couch_db:open(DbName, Options)
+        end
     end.
-
 
 is_deleted(Change) ->
     case couch_util:get_value(<<"deleted">>, Change) of
