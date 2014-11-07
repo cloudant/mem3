@@ -149,10 +149,14 @@ handle_info({'EXIT', Active, Reason}, State) ->
         case Reason of {pending_changes, Count} ->
             maybe_resubmit(State, Job#job{pid = nil, count = Count});
         _ ->
-            try mem3:shards(mem3:dbname(Job#job.name)) of _ ->
-                timer:apply_after(5000, ?MODULE, push, [Job#job{pid=nil}])
+            try mem3:live_shards(mem3:dbname(Job#job.name), [Job#job.node]) of
+                [] ->
+                    % Node is no longer in shard map, don't retry
+                    ok;
+                _ ->
+                    timer:apply_after(5000, ?MODULE, push, [Job#job{pid=nil}])
             catch error:database_does_not_exist ->
-                % no need to retry
+                % Database is gone, don't retry
                 ok
             end,
             State
