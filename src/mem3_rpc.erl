@@ -63,7 +63,7 @@ find_common_seq(Node, DbName, SourceUUID, SourceEpochs) ->
 
 load_checkpoint_rpc(DbName, SourceNode, SourceUUID) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
+    case get_or_create_db(DbName, [{user_ctx, ?CTX}]) of
     {ok, Db} ->
         TargetUUID = couch_db:get_uuid(Db),
         NewId = mem3_rep:make_local_id(SourceUUID, TargetUUID),
@@ -86,7 +86,7 @@ load_checkpoint_rpc(DbName, SourceNode, SourceUUID) ->
 
 save_checkpoint_rpc(DbName, Id, SourceSeq, NewEntry0, History0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
+    case get_or_create_db(DbName, [{user_ctx, ?CTX}]) of
         {ok, #db{update_seq = TargetSeq} = Db} ->
             NewEntry = {[
                 {<<"target_node">>, atom_to_binary(node(), utf8)},
@@ -116,7 +116,7 @@ save_checkpoint_rpc(DbName, Id, SourceSeq, NewEntry0, History0) ->
 
 find_common_seq_rpc(DbName, SourceUUID, SourceEpochs) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    case couch_db:open_int(DbName, [{user_ctx, ?CTX}]) of
+    case get_or_create_db(DbName, [{user_ctx, ?CTX}]) of
     {ok, Db} ->
         case couch_db:get_uuid(Db) of
         SourceUUID ->
@@ -275,6 +275,16 @@ rexi_call(Node, MFA) ->
         end
     after
         rexi_monitor:stop(Mon)
+    end.
+
+
+get_or_create_db(DbName, Options) ->
+    case couch_db:open_int(DbName, Options) of
+    {not_found, no_db_file} ->
+        twig:log(warn, "~p creating ~s", [?MODULE, DbName]),
+        couch_server:create(DbName, Options);
+    Else ->
+        Else
     end.
 
 
