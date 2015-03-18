@@ -42,16 +42,16 @@ go(DbName, Node, Opts) when is_binary(DbName), is_atom(Node) ->
     go(#shard{name=DbName, node=node()}, #shard{name=DbName, node=Node}, Opts);
 
 
-go(#shard{} = Source, #shard{} = Target, Opts) ->
+go(#shard{} = Source, #shard{node=TargetNode} = Target, Opts) ->
     mem3_sync_security:maybe_sync(Source, Target),
     BatchSize = case proplists:get_value(batch_size, Opts) of
         BS when is_integer(BS), BS > 0 -> BS;
-        _ -> 100
+        _ -> config:get_integer("mem3.batch_size", atom_to_list(TargetNode), 100)
     end,
     BatchCount = case proplists:get_value(batch_count, Opts) of
         all -> all;
         BC when is_integer(BC), BC > 0 -> BC;
-        _ -> 1
+        _ -> config:get_integer("mem3.batch_count", atom_to_list(TargetNode), 1)
     end,
     Filter = proplists:get_value(filter, Opts),
     Acc = #acc{
@@ -62,6 +62,14 @@ go(#shard{} = Source, #shard{} = Target, Opts) ->
         filter = Filter
     },
     go(Acc).
+
+
+go(#acc{batch_size=0}) ->
+    {ok, 0};
+
+
+go(#acc{batch_count=0}) ->
+    {ok, 0};
 
 
 go(#acc{source=Source, batch_count=BC}=Acc) ->
