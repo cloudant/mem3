@@ -168,11 +168,13 @@ find_source_seq_int(#doc{body={Props}}, SrcNode0, TgtNode0, TgtUUID, TgtSeq) ->
     end.
 
 
-repl(#db2{name=DbName, seq_tree=Bt}=Db, Acc0) ->
+repl(Db, Acc0) ->
+    DbName = couch_db:name(Db),
     erlang:put(io_priority, {internal_repl, DbName}),
     #acc{seq=Seq} = Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
     Fun = fun ?MODULE:changes_enumerator/3,
-    {ok, _, Acc2} = couch_btree:fold(Bt, Fun, Acc1, [{start_key, Seq + 1}]),
+    Options = [{start_key, Seq + 1}],
+    {ok, Acc2} = couch_db:fold_changes(Db, Options, Fun, Acc1),
     {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
     {ok, couch_db:count_changes_since(Db, LastSeq)}.
 
@@ -347,11 +349,11 @@ find_repl_doc(SrcDb, TgtUUIDPrefix) ->
                 {stop, not_found}
         end
     end,
-    Options = [{start_key, DocIdPrefix}],
-    case couch_btree:fold(SrcDb#db2.local_tree, FoldFun, not_found, Options) of
-        {ok, _, {TgtUUID, Doc}} ->
+    Options = [{start_key, DocIdPrefix}, {local, true}],
+    case couch_db:fold_docs(SrcDb, Options, FoldFun, not_found) of
+        {ok, {TgtUUID, Doc}} ->
             {ok, TgtUUID, Doc};
-        {ok, _, not_found} ->
+        {ok, not_found} ->
             {not_found, missing};
         Else ->
             twig:log(err, "Error finding replication doc: ~w", [Else]),

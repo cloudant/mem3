@@ -222,8 +222,11 @@ fold_fun(#doc_info{}=DI, _, {Db, UFun, UAcc}) ->
 get_update_seq() ->
     DbName = config:get("mem3", "shards_db", "dbs"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
-    couch_db:close(Db),
-    Db#db2.update_seq.
+    try
+        couch_db:update_seq(Db)
+    after
+        couch_db:close(Db)
+    end.
 
 listen_for_changes(Since) ->
     DbName = config:get("mem3", "shards_db", "dbs"),
@@ -273,7 +276,8 @@ load_shards_from_disk(DbName) when is_binary(DbName) ->
         couch_db:close(Db)
     end.
 
-load_shards_from_db(#db2{} = ShardDb, DbName) ->
+load_shards_from_db(ShardDb, DbName) ->
+    true = couch_db:is_db(ShardDb),
     case couch_db:open_doc(ShardDb, DbName, []) of
     {ok, #doc{body = {Props}}} ->
         Shards = mem3_util:build_ordered_shards(DbName, Props),
