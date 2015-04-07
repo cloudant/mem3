@@ -87,7 +87,7 @@ load_checkpoint_rpc(DbName, SourceNode, SourceUUID) ->
 save_checkpoint_rpc(DbName, Id, SourceSeq, NewEntry0, History0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case get_or_create_db(DbName, [{user_ctx, ?CTX}]) of
-        {ok, #db{update_seq = TargetSeq} = Db} ->
+        {ok, #db2{update_seq = TargetSeq} = Db} ->
             NewEntry = {[
                 {<<"target_node">>, atom_to_binary(node(), utf8)},
                 {<<"target_uuid">>, couch_db:get_uuid(Db)},

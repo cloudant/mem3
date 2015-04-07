@@ -143,7 +143,7 @@ get_shard(DbName, Node, Range) ->
 local_shards(DbName) ->
     mem3_shards:local(DbName).
 
-shard_suffix(#db{name=DbName}) ->
+shard_suffix(#db2{name=DbName}) ->
     shard_suffix(DbName);
 shard_suffix(DbName0) ->
     Shard = hd(shards(DbName0)),
@@ -268,7 +268,7 @@ group_by_range(Shards) ->
 
 % quorum functions
 
-quorum(#db{name=DbName}) ->
+quorum(#db2{name=DbName}) ->
     quorum(DbName);
 quorum(DbName) ->
     n(DbName) div 2 + 1.

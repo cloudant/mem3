@@ -94,7 +94,7 @@ code_change(_OldVsn, #state{}=State, _Extra) ->
 initialize_nodelist() ->
     DbName = config:get("mem3", "node_db", "nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
-    {ok, _, Db} = couch_btree:fold(Db#db.id_tree, fun first_fold/3, Db, []),
+    {ok, _, Db} = couch_btree:fold(Db#db2.id_tree, fun first_fold/3, Db, []),
     % add self if not already present
     case ets:lookup(?MODULE, node()) of
     [_] ->
@@ -105,7 +105,7 @@ initialize_nodelist() ->
         {ok, _} = couch_db:update_doc(Db, Doc, [])
     end,
     couch_db:close(Db),
-    Db#db.update_seq.
+    Db#db2.update_seq.
 
 first_fold(#full_doc_info{id = <<"_design/", _/binary>>}, _, Acc) ->
     {ok, Acc};

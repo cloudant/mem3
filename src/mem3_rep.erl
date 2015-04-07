@@ -168,7 +168,7 @@ find_source_seq_int(#doc{body={Props}}, SrcNode0, TgtNode0, TgtUUID, TgtSeq) ->
     end.
 
 
-repl(#db{name=DbName, seq_tree=Bt}=Db, Acc0) ->
+repl(#db2{name=DbName, seq_tree=Bt}=Db, Acc0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     #acc{seq=Seq} = Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
     Fun = fun ?MODULE:changes_enumerator/3,
@@ -348,7 +348,7 @@ find_repl_doc(SrcDb, TgtUUIDPrefix) ->
         end
     end,
     Options = [{start_key, DocIdPrefix}],
-    case couch_btree:fold(SrcDb#db.local_tree, FoldFun, not_found, Options) of
+    case couch_btree:fold(SrcDb#db2.local_tree, FoldFun, not_found, Options) of
         {ok, _, {TgtUUID, Doc}} ->
             {ok, TgtUUID, Doc};
         {ok, _, not_found} ->
