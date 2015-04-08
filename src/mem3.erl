@@ -143,7 +143,7 @@ get_shard(DbName, Node, Range) ->
 local_shards(DbName) ->
     mem3_shards:local(DbName).
 
-shard_suffix(DbName) when is_binary(DbName) ->
+shard_suffix(DbName0) when is_binary(DbName0) ->
     Shard = hd(shards(DbName0)),
     <<"shards/", _:8/binary, "-", _:8/binary, "/", DbName/binary>> =
         Shard#shard.name,
