@@ -95,7 +95,7 @@ initialize_nodelist() ->
     DbName = config:get("mem3", "node_db", "nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
     try
-        {ok, Db} = couch_db:fold_docs(Db, fun first_fold/3, Db, []),
+        {ok, Db} = couch_db:fold_docs(Db, [], fun first_fold/3, Db),
         % add self if not already present
         case ets:lookup(?MODULE, node()) of
             [_] ->
