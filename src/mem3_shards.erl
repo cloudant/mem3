@@ -49,7 +49,7 @@ for_db(DbName, Options) ->
         [] ->
             load_shards_from_disk(DbName);
         Else ->
-            gen_server:cast(?MODULE, {cache_hit, DbName}),
+            send_cache_hit(DbName),
             Else
     catch error:badarg ->
         load_shards_from_disk(DbName)
@@ -86,7 +86,7 @@ for_docid(DbName, DocId, Options) ->
         [] ->
             load_shards_from_disk(DbName, DocId);
         Else ->
-            gen_server:cast(?MODULE, {cache_hit, DbName}),
+            send_cache_hit(DbName),
             Else
     catch error:badarg ->
         load_shards_from_disk(DbName, DocId)
@@ -160,7 +160,6 @@ handle_call(_Call, _From, St) ->
     {noreply, St}.
 
 handle_cast({cache_hit, DbName}, St) ->
-    couch_stats:increment_counter([dbcore, mem3, shard_cache, hit]),
     cache_hit(DbName),
     {noreply, St};
 handle_cast({cache_insert, DbName, Shards}, St) ->
@@ -308,6 +307,10 @@ create_if_missing(Name) ->
                 [?MODULE, Name, Error])
         end
     end.
+
+send_cache_hit(DbName) ->
+    couch_stats:increment_counter([dbcore, mem3, shard_cache, hit]),
+    gen_server:cast(?MODULE, {cache_hit, DbName}).
 
 cache_insert(#st{cur_size=Cur}=St, DbName, Shards) ->
     NewATime = now(),
