@@ -479,12 +479,12 @@ shard_count_view() ->
 print({Op, Shard, TargetNode} = Operation) ->
     {match, [SourceId, Cluster]} = re:run(
         atom_to_list(Shard#shard.node),
-        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9]+)\.cloudant.net",
+        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9-]+)\.cloudant.net",
         [{capture, all_but_first, binary}]
     ),
     {match, [TargetId, Cluster]} = re:run(
         atom_to_list(TargetNode),
-        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9]+)\.cloudant.net",
+        "dbcore@db(?<node>[0-9]+)\.(?<cluster>[a-z0-9-]+)\.cloudant.net",
         [{capture, all_but_first, binary}]
     ),
     {match, [Range, Account, DbName]} = re:run(
