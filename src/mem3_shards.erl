@@ -280,8 +280,14 @@ load_shards_from_db(#db{} = ShardDb, DbName) ->
         gen_server:cast(?MODULE, {cache_insert, DbName, Shards}),
         Shards;
     {not_found, _} ->
+        cluster_cache_remove(DbName),
         erlang:error(database_does_not_exist, ?b2l(DbName))
     end.
+
+cluster_cache_remove(DbName) ->
+    lists:foreach(fun(Node) ->
+        gen_server:cast({mem3_shards, Node}, {cache_remove, DbName})
+    end, mem3:nodes()).
 
 load_shards_from_disk(DbName, DocId)->
     Shards = load_shards_from_disk(DbName),
