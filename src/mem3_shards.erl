@@ -170,14 +170,10 @@ handle_cast({cache_insert, DbName, Shards, ChangesUpdateSeq},
     couch_stats:increment_counter([dbcore, mem3, shard_cache, miss]),
     {noreply, cache_free(cache_insert(
         St#st{update_seq = ChangesUpdateSeq}, DbName, Shards))};
-handle_cast({cache_insert, _, _, _}, St) ->
-    {noreply, St};
 handle_cast({cache_remove, DbName, ChangesUpdateSeq},
         St=#st{update_seq = UpdateSeq}) when ChangesUpdateSeq >= UpdateSeq ->
     couch_stats:increment_counter([dbcore, mem3, shard_cache, eviction]),
     {noreply, cache_remove(St#st{update_seq = ChangesUpdateSeq}, DbName)};
-handle_cast({cache_remove, _, _}, St) ->
-    {noreply, St};
 handle_cast(_Msg, St) ->
     {noreply, St}.
 
