@@ -24,6 +24,7 @@
 -export([start_link/0]).
 -export([for_db/1, for_db/2, for_docid/2, for_docid/3, get/3, local/1, fold/2]).
 -export([set_max_size/1]).
+-export([get_update_seq/0]).
 
 -record(st, {
     max_size = 25000,

@@ -109,7 +109,7 @@ write_db_doc(DbName, #doc{id=Id, body=Body} = Doc, ShouldMutate) ->
     end.
 
 delete_db_doc(DocId) ->
-    gen_server:cast(mem3_shards, {cache_remove, DocId}),
+    gen_server:cast(mem3_shards, {cache_remove, DocId, mem3_shards:get_update_seq()}),
     DbName = ?l2b(config:get("mem3", "shard_db", "dbs")),
     delete_db_doc(DbName, DocId, true).
 
