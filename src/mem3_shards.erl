@@ -24,7 +24,6 @@
 -export([start_link/0]).
 -export([for_db/1, for_db/2, for_docid/2, for_docid/3, get/3, local/1, fold/2]).
 -export([set_max_size/1]).
--export([get_update_seq/0]).
 
 -record(st, {
     max_size = 25000,
@@ -146,12 +145,12 @@ init([]) ->
     ets:new(?ATIMES, [ordered_set, protected, named_table]),
     ok = config:listen_for_changes(?MODULE, nil),
     SizeList = config:get("mem3", "shard_cache_size", "25000"),
-    {Pid, _} = spawn_monitor(fun() -> listen_for_changes(get_update_seq()) end),
+    UpdateSeq = get_update_seq(),
     {ok, #st{
         max_size = list_to_integer(SizeList),
         cur_size = 0,
-        changes_pid = Pid,
-        update_seq = get_update_seq()
+        changes_pid = start_changes_listener(UpdateSeq),
+        update_seq = UpdateSeq
     }}.
 
 handle_call({set_max_size, Size}, _From, St) ->
@@ -166,15 +165,23 @@ handle_cast({cache_hit, DbName}, St) ->
     couch_stats:increment_counter([dbcore, mem3, shard_cache, hit]),
     cache_hit(DbName),
     {noreply, St};
-handle_cast({cache_insert, DbName, Shards, ChangesUpdateSeq},
-        St=#st{update_seq = UpdateSeq}) when ChangesUpdateSeq >= UpdateSeq ->
+handle_cast({cache_insert, DbName, Shards, UpdateSeq}, St) ->
     couch_stats:increment_counter([dbcore, mem3, shard_cache, miss]),
-    {noreply, cache_free(cache_insert(
-        St#st{update_seq = ChangesUpdateSeq}, DbName, Shards))};
-handle_cast({cache_remove, DbName, ChangesUpdateSeq},
-        St=#st{update_seq = UpdateSeq}) when ChangesUpdateSeq >= UpdateSeq ->
+    NewSt = case UpdateSeq < St#st.update_seq of
+        true -> St;
+        false -> cache_free(cache_insert(St, DbName, Shards))
+    end,
+    {noreply, NewSt};
+handle_cast({cache_remove, DbName}, St) ->
     couch_stats:increment_counter([dbcore, mem3, shard_cache, eviction]),
-    {noreply, cache_remove(St#st{update_seq = ChangesUpdateSeq}, DbName)};
+    {noreply, cache_remove(St, DbName)};
+handle_cast({cache_insert_change, DbName, Shards, UpdateSeq}, St) ->
+    Msg = {cache_insert, DbName, Shards, UpdateSeq},
+    {noreply, NewSt} = handle_cast(Msg, St),
+    {noreply, NewSt#st{update_seq = UpdateSeq}};
+handle_cast({cache_remove_change, DbName, UpdateSeq}, St) ->
+    {noreply, NewSt} = handle_cast({cache_remove, DbName}, St),
+    {noreply, NewSt#st{update_seq = UpdateSeq}};
 handle_cast(_Msg, St) ->
     {noreply, St}.
 
@@ -191,8 +198,9 @@ handle_info({'DOWN', _, _, Pid, Reason}, #st{changes_pid=Pid}=St) ->
     erlang:send_after(5000, self(), {start_listener, Seq}),
     {noreply, NewSt#st{changes_pid=undefined}};
 handle_info({start_listener, Seq}, St) ->
-    {NewPid, _} = spawn_monitor(fun() -> listen_for_changes(Seq) end),
-    {noreply, St#st{changes_pid=NewPid}};
+    {noreply, St#st{
+        changes_pid = start_changes_listener(Seq)
+    }};
 handle_info({gen_event_EXIT, {config_listener, ?MODULE}, _Reason}, State) ->
     erlang:send_after(5000, self(), restart_config_listener),
     {noreply, State};
@@ -210,6 +218,21 @@ code_change(_OldVsn, #st{}=St, _Extra) ->
     {ok, St}.
 
 %% internal functions
+
+start_changes_listener(SinceSeq) ->
+    Self = self(),
+    {Pid, _} = erlang:spawn_monitor(fun() ->
+        erlang:spawn_link(fun() ->
+            Ref = erlang:monitor(process, Self),
+            receive
+                {'DOWN', Ref, _, _, _} ->
+                    ok
+            end,
+            exit(shutdown)
+        end),
+        listen_for_changes(SinceSeq)
+    end),
+    Pid.
 
 fold_fun(#full_doc_info{}=FDI, _, Acc) ->
     DI = couch_doc:to_doc_info(FDI),
@@ -249,11 +272,11 @@ changes_callback({stop, EndSeq}, _) ->
     exit({seq, EndSeq});
 changes_callback({change, {Change}, _}, _) ->
     DbName = couch_util:get_value(<<"id">>, Change),
-    ChangesUpdateSeq = couch_util:get_value(<<"seq">>, Change),
+    Seq = couch_util:get_value(<<"seq">>, Change),
     case DbName of <<"_design/", _/binary>> -> ok; _Else ->
         case mem3_util:is_deleted(Change) of
         true ->
-            gen_server:cast(?MODULE, {cache_remove, DbName, ChangesUpdateSeq});
+            gen_server:cast(?MODULE, {cache_remove_change, DbName, Seq});
         false ->
             case couch_util:get_value(doc, Change) of
             {error, Reason} ->
@@ -261,14 +284,14 @@ changes_callback({change, {Change}, _}, _) ->
                     [DbName, Reason]);
             {Doc} ->
                 Shards = mem3_util:build_ordered_shards(DbName, Doc),
-                gen_server:cast(
-                    ?MODULE, {cache_insert, DbName, Shards, ChangesUpdateSeq}),
+                Msg = {cache_insert_change, DbName, Shards, Seq},
+                gen_server:cast(?MODULE, Msg),
                 [create_if_missing(mem3:name(S)) || S
                     <- Shards, mem3:node(S) =:= node()]
             end
         end
     end,
-    {ok, ChangesUpdateSeq};
+    {ok, Seq};
 changes_callback(timeout, _) ->
     ok.
 
@@ -281,11 +304,12 @@ load_shards_from_disk(DbName) when is_binary(DbName) ->
         couch_db:close(Db)
     end.
 
-load_shards_from_db(#db{update_seq = UpdateSeq} = ShardDb, DbName) ->
+load_shards_from_db(ShardDb, DbName) ->
+    Seq = couch_db:get_update_seq(ShardDb),
     case couch_db:open_doc(ShardDb, DbName, []) of
     {ok, #doc{body = {Props}}} ->
         Shards = mem3_util:build_ordered_shards(DbName, Props),
-        gen_server:cast(?MODULE, {cache_insert, DbName, Shards, UpdateSeq}),
+        gen_server:cast(?MODULE, {cache_insert, DbName, Shards, Seq}),
         Shards;
     {not_found, _} ->
         erlang:error(database_does_not_exist, ?b2l(DbName))
