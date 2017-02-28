@@ -394,3 +394,75 @@ cache_clear(St) ->
     true = ets:delete_all_objects(?SHARDS),
     true = ets:delete_all_objects(?ATIMES),
     St#st{cur_size=0}.
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+setup() ->
+    ok = meck:expect(mem3_util, build_ordered_shards, ['_', '_'], []),
+    ok = meck:expect(mem3_util, ensure_exists, ['_'],
+        {ok, #db{name = <<"dbs">>, update_seq = 0}}),
+    ok = meck:expect(couch_db, close, ['_'], ok),
+    application:start(config),
+    {ok, Pid} = ?MODULE:start_link(),
+    erlang:unlink(Pid),
+    Pid.
+
+teardown(Pid) ->
+    exit(Pid, shutdown),
+    application:stop(config),
+    ok.
+
+mem3_shards_test_() -> {
+    "Test mem3_shards", {
+        foreach,
+        fun setup/0, fun teardown/1, [
+            fun should_kill_changes_listener/1,
+            fun should_ignore_old_changes/1
+        ]
+    }
+}.
+
+should_kill_changes_listener(Pid) ->
+    ?_test(begin
+        ?assert(is_process_alive(Pid)),
+        ChangesPid = (get_state(Pid))#st.changes_pid,
+        ?assert(is_process_alive(ChangesPid)),
+        Ref = erlang:monitor(process, ChangesPid),
+        exit(Pid, shutdown),
+        receive {'DOWN', Ref, _, _, _} -> ok
+        after 5000 -> throw(wait_timeout)
+        end,
+        ?assertNot(is_process_alive(ChangesPid)),
+        ok
+    end).
+
+should_ignore_old_changes(Pid) ->
+    ?_test(begin
+        ?assertEqual(0, (get_state(Pid))#st.update_seq),
+        Insert = [
+            {<<"id">>, <<"dbs">>},
+            {doc, {[]}},
+            {<<"seq">>, 1}],
+        Delete = [
+            {<<"id">>, <<"dbs">>},
+            {doc, null},
+            {deleted,true},
+            {<<"seq">>, 2}],
+        {ok, 1} = changes_callback(msg(Insert), []),
+        {ok, 2} = changes_callback(msg(Delete), []),
+        {ok, 1} = changes_callback(msg(Insert), []),
+        ?assertEqual(2, (get_state(Pid))#st.update_seq),
+        ok
+    end).
+
+get_state(Pid) ->
+    {status, _, {module, _}, [_, _, _, _, [_, _, {data,[{_, St}]}]]} =
+        sys:get_status(Pid),
+    St.
+
+msg(Change) ->
+    {change, {Change}, []}.
+
+-endif.
