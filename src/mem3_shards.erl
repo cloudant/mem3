@@ -399,8 +399,11 @@ cache_clear(St) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
+-define(DB, <<"testdb">>).
+
 setup() ->
-    ok = meck:expect(mem3_util, build_ordered_shards, ['_', '_'], []),
+    ok = meck:expect(mem3_util, build_ordered_shards, ['_', '_'],
+        [#shard{dbname = ?DB}]),
     ok = meck:expect(mem3_util, ensure_exists, ['_'],
         {ok, #db{name = <<"dbs">>, update_seq = 0}}),
     ok = meck:expect(couch_db, close, ['_'], ok),
@@ -412,14 +415,14 @@ setup() ->
 teardown(Pid) ->
     exit(Pid, shutdown),
     application:stop(config),
-    ok.
+    meck:unload().
 
-mem3_shards_test_() -> {
-    "Test mem3_shards", {
+mem3_shards_changes_test_() -> {
+    "Test mem3_shards changes", {
         foreach,
         fun setup/0, fun teardown/1, [
             fun should_kill_changes_listener/1,
-            fun should_ignore_old_changes/1
+            fun should_ignore_stale_shard_load/1
         ]
     }
 }.
@@ -438,24 +441,46 @@ should_kill_changes_listener(Pid) ->
         ok
     end).
 
-should_ignore_old_changes(Pid) ->
+should_ignore_stale_shard_load(Pid) ->
     ?_test(begin
         ?assertEqual(0, (get_state(Pid))#st.update_seq),
         Insert = [
-            {<<"id">>, <<"dbs">>},
+            {<<"id">>, ?DB},
             {doc, {[]}},
             {<<"seq">>, 1}],
         Delete = [
-            {<<"id">>, <<"dbs">>},
+            {<<"id">>, ?DB},
             {doc, null},
             {deleted,true},
             {<<"seq">>, 2}],
         {ok, 1} = changes_callback(msg(Insert), []),
+        wait_until(fun() -> 1 == length(ets:tab2list(?SHARDS)) end),
         {ok, 2} = changes_callback(msg(Delete), []),
-        {ok, 1} = changes_callback(msg(Insert), []),
+        wait_until(fun() -> 0 == length(ets:tab2list(?SHARDS)) end),
+        ?assertEqual(2, (get_state(Pid))#st.update_seq),
+        simulate_stale_client_shard_load(),
+        ?assertEqual(0, length(ets:tab2list(?SHARDS))),
         ?assertEqual(2, (get_state(Pid))#st.update_seq),
         ok
     end).
+
+wait_until(ConditionFun) ->
+    wait_until(ConditionFun, 10, 100).
+
+wait_until(ConditionFun, Sleep, Timeout) when Timeout > 0 ->
+    case ConditionFun() of
+        true ->
+            ok;
+        false ->
+            timer:sleep(Sleep),
+            wait_until(ConditionFun, Sleep, Timeout - Sleep)
+    end;
+wait_until(_, _, _) ->
+    throw(timeout).
+
+simulate_stale_client_shard_load() ->
+    gen_server:cast(?MODULE, {cache_insert, [#shard{dbname=?DB}], 1}),
+    timer:sleep(100).
 
 get_state(Pid) ->
     {status, _, {module, _}, [_, _, _, _, [_, _, {data,[{_, St}]}]]} =
