@@ -225,7 +225,7 @@ ensure_exists(DbName) ->
         {ok, Db} ->
             {ok, Db};
         file_exists -> % harmless race
-            {ok, Db} = couch_db:open(DbName, Options)
+            {ok, _Db} = couch_db:open(DbName, Options)
         end
     end.
 
