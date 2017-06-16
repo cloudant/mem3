@@ -328,7 +328,7 @@ changes_callback(timeout, _) ->
     ok.
 
 load_shards_from_disk(DbName) when is_binary(DbName) ->
-    couch_stats:increment_counter([mem3, shard_cache, miss]),
+    couch_stats:increment_counter([dbcore, mem3, shard_cache, miss]),
     X = ?l2b(config:get("mem3", "shard_db", "dbs")),
     {ok, Db} = mem3_util:ensure_exists(X),
     try
