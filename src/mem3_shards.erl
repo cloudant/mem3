@@ -249,7 +249,10 @@ code_change(1 = OldVsn, {st, MaxSize, CurSize, ChangesPid} = St, _Extra) ->
 code_change({down, 2} = OldVsn, St, _Extra) ->
     {st, MaxSize, CurSize, ChangesPid, _, _} = St,
     twig:log(notice, "~p code_change ~p ~p", [?MODULE, OldVsn, St]),
-    downgrade(MaxSize, CurSize, ChangesPid).
+    downgrade(MaxSize, CurSize, ChangesPid);
+
+code_change(_OldVsn, #st{} = St, _Extra) ->
+    {ok, St}.
 
 
 upgrade(MaxSize, CurSize, ChangesPid) ->
