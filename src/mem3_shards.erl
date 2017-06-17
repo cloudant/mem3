@@ -14,7 +14,7 @@
 
 -module(mem3_shards).
 -behaviour(gen_server).
--vsn(1).
+-vsn(2).
 -behaviour(config_listener).
 
 -export([init/1, terminate/2, code_change/3]).
@@ -242,7 +242,49 @@ terminate(_Reason, #st{changes_pid=Pid}) ->
     exit(Pid, kill),
     ok.
 
-code_change(_OldVsn, #st{}=St, _Extra) ->
+code_change(1 = OldVsn, {st, MaxSize, CurSize, ChangesPid} = St, _Extra) ->
+    twig:log(notice, "~p code_change ~p ~p", [?MODULE, OldVsn, St]),
+    upgrade(MaxSize, CurSize, ChangesPid);
+
+code_change({down, 2} = OldVsn, St, _Extra) ->
+    {st, MaxSize, CurSize, ChangesPid, _, _} = St,
+    twig:log(notice, "~p code_change ~p ~p", [?MODULE, OldVsn, St]),
+    downgrade(MaxSize, CurSize, ChangesPid).
+
+
+upgrade(MaxSize, CurSize, ChangesPid) ->
+    %% recreate shards table
+    ShardsStash = ets:tab2list(?SHARDS),
+    ets:delete(?SHARDS),
+    ets:new(?SHARDS, [
+        bag,
+        public,
+        named_table,
+        {keypos,#shard.dbname},
+        {read_concurrency, true}
+    ]),
+    ets:insert(?SHARDS, ShardsStash),
+
+    %% create new table
+    ets:new(?OPENERS, [bag, public, named_table]),
+
+    %% add new record entries
+    St = #st{
+        max_size = MaxSize,
+        cur_size = CurSize,
+        changes_pid = ChangesPid,
+        update_seq = get_update_seq(),
+        write_timeout = config:get_integer("mem3", "shard_write_timeout", 1000)
+    },
+    {ok, St}.
+
+downgrade(MaxSize, CurSize, ChangesPid) ->
+    %% explicitly leave shards table public, and read_concurrent (unchanged)
+
+    %% delete new table
+    ets:delete(?OPENERS),
+
+    St = {st, MaxSize, CurSize, ChangesPid},
     {ok, St}.
 
 %% internal functions
