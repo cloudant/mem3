@@ -30,7 +30,8 @@
     cur_size = 0,
     changes_pid,
     update_seq,
-    write_timeout
+    write_timeout,
+    code_change = nil
 }).
 
 -include("mem3.hrl").
@@ -200,7 +201,7 @@ handle_cast({cache_insert, DbName, Writer, UpdateSeq}, St) ->
             cache_free(cache_insert(St, DbName, Writer, St#st.write_timeout))
     end,
     {noreply, NewSt};
-handle_cast({cache_remove, DbName}, St) ->
+handle_cast({cache_remove, DbName}, #st{code_change=nil} = St) ->
     couch_stats:increment_counter([dbcore, mem3, shard_cache, eviction]),
     {noreply, cache_remove(St, DbName)};
 handle_cast({cache_insert_change, DbName, Writer, UpdateSeq}, St) ->
@@ -210,6 +211,12 @@ handle_cast({cache_insert_change, DbName, Writer, UpdateSeq}, St) ->
 handle_cast({cache_remove_change, DbName, UpdateSeq}, St) ->
     {noreply, NewSt} = handle_cast({cache_remove, DbName}, St),
     {noreply, NewSt#st{update_seq = UpdateSeq}};
+handle_cast({cache_remove, DbName}, St) ->
+    %% this is a hot code upgrade clause which can be removed later
+    %% we postpone cache_remove to make sure we wouldn't get the entry back
+    %% after code_change ets migration would finish
+    #st{code_change={make_public, Ref, Deleted}} = St,
+    {noreply, St#st{code_change={make_public, Ref, [DbName | Deleted]}}};
 handle_cast(_Msg, St) ->
     {noreply, St}.
 
@@ -225,6 +232,13 @@ handle_info({'DOWN', _, _, Pid, Reason}, #st{changes_pid=Pid}=St) ->
     end,
     erlang:send_after(5000, self(), {start_listener, Seq}),
     {noreply, NewSt#st{changes_pid=undefined}};
+handle_info({'DOWN', Ref, _, _, _}, #st{code_change={make_public, Ref, Deleted}}=St) ->
+    %% this is a hot code upgrade clause which can be removed later
+    NewSt = lists:foldl(fun(DbName, S) ->
+        {noreply, NewS} = handle_cast({cache_remove, DbName}, S),
+        NewS
+    end, St#st{code_change=nil}, Deleted),
+    {noreply, NewSt};
 handle_info({start_listener, Seq}, St) ->
     {noreply, St#st{
         changes_pid = start_changes_listener(Seq)
@@ -257,16 +271,13 @@ code_change(_OldVsn, #st{} = St, _Extra) ->
 
 upgrade(MaxSize, CurSize, ChangesPid) ->
     %% recreate shards table
-    ShardsStash = ets:tab2list(?SHARDS),
-    ets:delete(?SHARDS),
-    ets:new(?SHARDS, [
+    {_Pid, MonRef} = make_ets_public(?SHARDS, [
         bag,
         public,
         named_table,
         {keypos,#shard.dbname},
         {read_concurrency, true}
     ]),
-    ets:insert(?SHARDS, ShardsStash),
 
     %% create new table
     ets:new(?OPENERS, [bag, public, named_table]),
@@ -277,7 +288,8 @@ upgrade(MaxSize, CurSize, ChangesPid) ->
         cur_size = CurSize,
         changes_pid = ChangesPid,
         update_seq = get_update_seq(),
-        write_timeout = config:get_integer("mem3", "shard_write_timeout", 1000)
+        write_timeout = config:get_integer("mem3", "shard_write_timeout", 1000),
+        code_change = {make_public, MonRef, []}
     },
     {ok, St}.
 
@@ -291,6 +303,21 @@ downgrade(MaxSize, CurSize, ChangesPid) ->
     {ok, St}.
 
 %% internal functions
+
+make_ets_public(Table, Options) ->
+    ets:rename(Table, mem3_shards_old),
+    ets:new(Table, Options),
+    StartRef = make_ref(),
+    {Pid, MonRef} = spawn_monitor(fun() ->
+        receive
+            StartRef ->
+                ets:insert(Table, ets:tab2list(mem3_shards_old)),
+                exit(make_public)
+        end
+    end),
+    ets:give_away(mem3_shards_old, Pid, make_public),
+    Pid ! StartRef,
+    {Pid, MonRef}.
 
 start_changes_listener(SinceSeq) ->
     Self = self(),
@@ -530,6 +557,10 @@ flush_write(DbName, Writer, WriteTimeout) ->
 -define(DB, <<"eunit_db_name">>).
 -define(INFINITY, 99999999).
 
+-define(START_TIMEOUT, 5000).
+-define(NUMBER_OF_DATABASES, 50).
+-define(WAIT_ETS_TIMEOUT, 5000).
+
 
 mem3_shards_test_() ->
     {
@@ -567,6 +598,53 @@ teardown(_) ->
     ets:delete(?OPENERS),
     ets:delete(?SHARDS).
 
+mem3_shards_code_upgrade_test_() ->
+    {
+        foreach,
+        fun setup_old/0,
+        fun teardown_old/1,
+        [
+            fun t_remove_from_cache_after_code_upgrade/1,
+            fun t_migrate_ets_content/1
+        ]
+    }.
+
+setup_old() ->
+    {_, Ref} = From = {self(), make_ref()},
+    Pid = proc_lib:spawn_link(fun() -> init_old(From) end),
+    Size = receive
+        {Ref, S} -> S
+    after ?START_TIMEOUT -> erlang:error(start_timeout)
+    end,
+    meck:expect(config, get, ["mem3", "shards_db", '_'], "_dbs"),
+    meck:expect(couch_db, close, ['_'], ok),
+
+    meck:expect(couch_stats, increment_counter, 1, ok),
+    meck:expect(mem3_util, ensure_exists, 1,
+        {ok, #db{name = <<"testdb">>, update_seq = 1}}),
+    meck:validate(couch_stats),
+    meck:validate(couch_db),
+    meck:validate(mem3_util),
+    meck:validate(config),
+    {Pid, Size}.
+
+teardown_old({Pid, _Size}) ->
+    unlink(Pid),
+    exit(Pid, kill),
+    meck:unload().
+
+init_old({Parent, Ref}) ->
+    erlang:register(mem3_shards, self()),
+    ets:new(?SHARDS, [bag, protected, named_table, {keypos, #shard.dbname}]),
+    ets:new(?DBS, [set, public, named_table]),
+    ets:new(?ATIMES, [ordered_set, public, named_table]),
+    proc_lib:init_ack(Parent, {ok, self()}),
+    lists:foreach(fun(_) ->
+        ets:insert(?SHARDS, random_shards())
+    end, lists:seq(1, ?NUMBER_OF_DATABASES)),
+    Parent ! {Ref, ets:info(?SHARDS, size)},
+    State = {st, 25000, 0, changesPid},
+    gen_server:enter_loop(mem3_shards, [], State).
 
 t_maybe_spawn_shard_writer_already_exists() ->
     ?_test(begin
@@ -691,6 +769,29 @@ t_cache_insert_ignores_stale_update_and_kills_worker() ->
     end).
 
 
+t_remove_from_cache_after_code_upgrade({Pid, Size}) ->
+    ?_test(begin
+        Keys = ets_keys(?SHARDS),
+        ToRemove = keys_to_remove(Keys, Size div 3),
+        hot_code_upgrade(Pid, mem3_shards),
+        lists:foreach(fun(DbName) ->
+            remove_from_cache(Pid, DbName)
+        end, ToRemove),
+        wait_ets_table(Pid),
+        ?assertEqual(
+            lists:usort(Keys -- ToRemove),
+            lists:usort(ets_keys(?SHARDS))),
+        ok
+    end).
+
+t_migrate_ets_content({Pid, Size}) ->
+    ?_test(begin
+        hot_code_upgrade(Pid, mem3_shards),
+        wait_ets_table(Pid),
+        ?assertEqual(Size, ets:info(?SHARDS, size)),
+        ?assertEqual(public, ets:info(?SHARDS, protection))
+    end).
+
 mock_state(UpdateSeq) ->
     #st{
         update_seq = UpdateSeq,
@@ -723,5 +824,70 @@ wait_writer_result(WRef) ->
 spawn_link_mock_writer(Db, Shards, Timeout) ->
     erlang:spawn_link(fun() -> shard_writer(Db, Shards, Timeout) end).
 
+keys_to_remove(Keys, N) ->
+    keys_to_remove(Keys, N, []).
+
+keys_to_remove(_Keys, 0, Acc) ->
+    Acc;
+keys_to_remove([], _N, Acc) ->
+    Acc;
+keys_to_remove(Keys, N, Acc) ->
+    Key = oneof(Keys),
+    keys_to_remove(Keys -- [Key], N - 1, [Key | Acc]).
+
+oneof(Options) ->
+    lists:nth(random:uniform(length(Options)), Options).
+
+remove_from_cache(Pid, DbName) ->
+    gen_server:cast(Pid, {cache_remove, DbName}).
+
+wait_ets_table(Pid) ->
+    Now = now_us(),
+    Deadline = Now + ?WAIT_ETS_TIMEOUT * 1000, %% we need microseconds
+    wait_ets_table(Pid, Deadline, _Delay = 50, Now).
+
+wait_ets_table(_Pid, Deadline, _Delay, Prev) when Prev > Deadline ->
+    throw({timeout, wait_ets_table});
+wait_ets_table(Pid, Deadline, Delay, _Prev) ->
+    case sys:get_state(Pid) of
+        {st, _, _, _, _, _, {make_public, _Ref}} ->
+            ok = timer:sleep(Delay),
+            wait_ets_table(Pid, Deadline, Delay, now_us());
+        {st, _, _, _, _, _, nil} ->
+            ok;
+        _St ->
+            ok = timer:sleep(Delay),
+            wait_ets_table(Pid, Deadline, Delay, now_us())
+    end.
+
+random_shards() ->
+    Q = random:uniform(5),
+    N = random:uniform(5),
+    Nodes = lists:seq(1, random:uniform(5)),
+    mem3_util:create_partition_map(tempdb(), N, Q, Nodes).
+
+tempdb() ->
+    Nums = tuple_to_list(erlang:now()),
+    Prefix = "eunit-test-db",
+    Suffix = lists:concat([integer_to_list(Num) || Num <- Nums]),
+    list_to_binary(Prefix ++ "-" ++ Suffix).
+
+hot_code_upgrade(Pid, Module) ->
+    ok = sys:suspend(Pid),
+    ok = sys:change_code(Pid, Module, 1, extra),
+    ok = sys:resume(Pid),
+    ok.
+
+ets_keys(Tab) ->
+    ets_keys(Tab, ets:first(Tab), []).
+
+ets_keys(_Tab, '$end_of_table', Acc) ->
+    Acc;
+ets_keys(Tab, Key, Acc) ->
+    ets_keys(Tab, ets:next(Tab, Key), [Key | Acc]).
+
+now_us() ->
+    {MegaSecs, Secs, MicroSecs} = now(),
+    (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.
 
 -endif.
